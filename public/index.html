@@ -114,11 +114,23 @@
         el.innerHTML = '<p class="text-center text-zinc-400 dark:text-zinc-600 text-sm">No presses yet</p>';
         return;
       }
-      el.innerHTML = leaderboard.map((r, i) =>
-        '<div class="flex justify-between px-3 py-1 rounded ' + (i === 0 ? 'bg-violet-600/20 text-violet-300' : 'text-zinc-600 dark:text-zinc-400') + '">' +
-        '<span>' + (i + 1) + '. ' + r.username + '</span>' +
-        '<span class="font-mono">' + r.presses + '</span></div>'
-      ).join('');
+      // Subtle gold / silver / bronze accents for the top three finishers.
+      const podium = [
+        { row: 'bg-amber-400/10 ring-1 ring-amber-400/30 text-amber-700 dark:text-amber-300', medal: 'text-amber-500', icon: '🥇' },
+        { row: 'bg-zinc-400/10 ring-1 ring-zinc-400/30 text-zinc-600 dark:text-zinc-300', medal: 'text-zinc-400', icon: '🥈' },
+        { row: 'bg-orange-500/10 ring-1 ring-orange-500/25 text-orange-700 dark:text-orange-300', medal: 'text-orange-500', icon: '🥉' },
+      ];
+      el.innerHTML = leaderboard.map((r, i) => {
+        const p = podium[i];
+        const rowClass = p ? p.row : 'text-zinc-600 dark:text-zinc-400';
+        const rankLabel = p
+          ? '<span class="' + p.medal + '">' + p.icon + '</span>'
+          : '<span class="tabular-nums text-zinc-400 dark:text-zinc-500">' + (i + 1) + '.</span>';
+        return '<div class="flex items-center justify-between px-3 py-1.5 rounded-md ' + rowClass + '">' +
+          '<span class="flex items-center gap-2"><span class="w-5 text-center">' + rankLabel + '</span>' +
+          '<span class="' + (p ? 'font-medium' : '') + '">' + r.username + '</span></span>' +
+          '<span class="font-mono">' + r.presses + '</span></div>';
+      }).join('');
       const total = leaderboard.reduce((s, r) => s + parseInt(r.presses), 0);
       document.getElementById('count').textContent = total + ' total presses';
     }
