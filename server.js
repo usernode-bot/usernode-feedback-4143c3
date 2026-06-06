@@ -37,6 +37,17 @@ app.use((req, res, next) => {
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
+// Client config: the app's recipient pubkey for on-chain "tap" transactions
+// and the current environment. Authenticated (not in PUBLIC_API_PATHS) so it
+// is only readable from inside the iframe. `appPubkey` is null when APP_PUBKEY
+// is unset, in which case the frontend degrades to a plain press.
+app.get('/api/config', (_req, res) => {
+  res.json({
+    appPubkey: process.env.APP_PUBKEY ?? null,
+    env: process.env.USERNODE_ENV ?? null,
+  });
+});
+
 // Button press
 app.post('/api/press', async (req, res) => {
   try {
