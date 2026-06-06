@@ -1,3 +1,10 @@
 {
-  "secrets": []
+  "secrets": [
+    {
+      "key": "APP_PUBKEY",
+      "description": "The app's on-chain recipient address (ut1...) that each Press! sends a zero-value tap to. Public pubkey; leave unset to disable on-chain taps (presses still record).",
+      "required": false,
+      "private": false
+    }
+  ]
 }

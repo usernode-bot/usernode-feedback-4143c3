@@ -73,6 +73,9 @@
   <title>Usernode Feedback</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script>tailwind.config = { darkMode: 'class' }</script>
+  <!-- Usernode bridge: centrally hosted, never vendored. Provides
+       window.getNodeAddress / window.sendTransaction. -->
+  <script src="https://social-vibecoding.usernodelabs.org/usernode-bridge/v1/bridge.js"></script>
 </head>
 <body class="bg-white dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 min-h-screen flex flex-col items-center justify-center gap-8 p-4 relative">
 
@@ -105,6 +108,23 @@
     const token = params.get('token') || '';
     const headers = token ? { 'x-usernode-token': token } : {};
 
+    const pressBtn = document.getElementById('press-btn');
+    const countEl = document.getElementById('count');
+
+    // App recipient pubkey for the on-chain "tap". Loaded from /api/config;
+    // stays null when APP_PUBKEY is unset, in which case presses are recorded
+    // without an on-chain send (graceful degrade).
+    let appPubkey = null;
+
+    async function loadConfig() {
+      try {
+        const res = await fetch('/api/config', { headers });
+        if (!res.ok) return;
+        const cfg = await res.json();
+        appPubkey = cfg.appPubkey || null;
+      } catch {}
+    }
+
     async function loadLeaderboard() {
       const res = await fetch('/api/leaderboard', { headers });
       if (!res.ok) return;
@@ -123,15 +143,42 @@
       document.getElementById('count').textContent = total + ' total presses';
     }
 
-    document.getElementById('press-btn').addEventListener('click', async () => {
+    async function recordPress() {
+      const res = await fetch('/api/press', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...headers },
+      });
+      if (res.ok) loadLeaderboard();
+      else if (res.status === 401) countEl.textContent = 'Sign in to press!';
+    }
+
+    pressBtn.addEventListener('click', async () => {
+      pressBtn.disabled = true;
       try {
-        const res = await fetch('/api/press', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...headers },
-        });
-        if (res.ok) loadLeaderboard();
-        else if (res.status === 401) document.getElementById('count').textContent = 'Sign in to press!';
-      } catch {}
+        // Fire a zero-value on-chain "tap" to the app pubkey before recording
+        // the press. Skip the send (and just record) when the bridge isn't
+        // available or no app pubkey is configured.
+        if (appPubkey && typeof window.sendTransaction === 'function') {
+          countEl.textContent = 'Sending…';
+          try {
+            await window.sendTransaction(appPubkey, 0, 'press', {
+              confirmTitle: 'Press!',
+              waitForInclusion: false,
+            });
+          } catch (err) {
+            const msg = String((err && err.message) || err || '');
+            countEl.textContent = /not available|no wallet|not linked/i.test(msg)
+              ? 'Link a wallet to press'
+              : "Couldn't send — try again";
+            return; // don't record the press if the tap didn't go through
+          }
+        }
+        await recordPress();
+      } catch {
+        countEl.textContent = "Couldn't send — try again";
+      } finally {
+        pressBtn.disabled = false;
+      }
     });
 
     // Dark mode toggle
@@ -161,6 +208,7 @@
       try { localStorage.setItem('theme', next ? 'dark' : 'light'); } catch (_) {}
     });
 
+    loadConfig();
     loadLeaderboard();
   </script>
 </body>
