@@ -164,11 +164,41 @@
         el.innerHTML = '<p class="text-center text-zinc-400 dark:text-zinc-600 text-sm">No presses yet</p>';
         return;
       }
-      el.innerHTML = leaderboard.map((r, i) =>
-        '<div class="flex justify-between px-3 py-1 rounded ' + (i === 0 ? 'bg-violet-600/20 text-violet-300' : 'text-zinc-600 dark:text-zinc-400') + '">' +
-        '<span>' + (i + 1) + '. ' + r.username + '</span>' +
-        '<span class="font-mono">' + r.presses + '</span></div>'
-      ).join('');
+      // Top-three finishers get premium metallic sheens built from the
+      // exact gold / silver / bronze base hexes (#FFD700 / #C0C0C0 / #CD7F32).
+      // Each gradient runs a soft light highlight -> base -> dark edge at 135deg
+      // for a subtle brushed-metal look; dark text keeps them legible in both
+      // light and dark mode, and a tinted ring adds the elevated outline.
+      const podium = [
+        { // gold
+          style: 'background:linear-gradient(135deg,#FFF1A8 0%,#FFD700 45%,#C9A227 100%);' +
+                 'box-shadow:inset 0 0 0 1px rgba(201,162,39,0.55);',
+          icon: '🥇',
+        },
+        { // silver
+          style: 'background:linear-gradient(135deg,#F2F2F2 0%,#C0C0C0 45%,#8A8A8A 100%);' +
+                 'box-shadow:inset 0 0 0 1px rgba(138,138,138,0.55);',
+          icon: '🥈',
+        },
+        { // bronze
+          style: 'background:linear-gradient(135deg,#E6B07F 0%,#CD7F32 45%,#8C551F 100%);' +
+                 'box-shadow:inset 0 0 0 1px rgba(140,85,31,0.55);',
+          icon: '🥉',
+        },
+      ];
+      el.innerHTML = leaderboard.map((r, i) => {
+        const p = podium[i];
+        const rankLabel = p
+          ? '<span>' + p.icon + '</span>'
+          : '<span class="tabular-nums text-zinc-400 dark:text-zinc-500">' + (i + 1) + '.</span>';
+        const rowAttrs = p
+          ? 'class="flex items-center justify-between px-3 py-1.5 rounded-md font-medium text-zinc-900" style="' + p.style + '"'
+          : 'class="flex items-center justify-between px-3 py-1.5 rounded-md text-zinc-600 dark:text-zinc-400"';
+        return '<div ' + rowAttrs + '>' +
+          '<span class="flex items-center gap-2"><span class="w-5 text-center">' + rankLabel + '</span>' +
+          '<span>' + r.username + '</span></span>' +
+          '<span class="font-mono">' + r.presses + '</span></div>';
+      }).join('');
       const total = leaderboard.reduce((s, r) => s + parseInt(r.presses), 0);
       document.getElementById('count').textContent = total + ' total presses';
     }
