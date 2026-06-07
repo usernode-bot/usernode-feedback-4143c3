@@ -81,14 +81,26 @@
     .star-particle {
       animation: starFloat 0.6s ease-out forwards;
     }
+    @keyframes burstFloat {
+      from { transform: translateY(0) scale(1) rotate(0deg); opacity: 1; }
+      to   { transform: translateY(-110px) scale(0.4) rotate(45deg); opacity: 0; }
+    }
+    .burst-particle {
+      animation: burstFloat 0.75s ease-out forwards;
+    }
+    @keyframes toastIn {
+      from { opacity: 0; transform: translateX(-50%) translateY(12px); }
+      to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+    }
+    .toast-visible {
+      animation: toastIn 0.25s ease-out forwards;
+    }
     @media (prefers-reduced-motion: reduce) {
-      .star-particle {
-        animation-duration: 0.01s;
-      }
+      .star-particle, .burst-particle { animation-duration: 0.01s; }
     }
   </style>
 </head>
-<body class="bg-white dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 min-h-screen flex flex-col items-center justify-center gap-8 p-4 relative">
+<body class="bg-white dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 min-h-screen flex flex-col items-center justify-center gap-5 p-4 relative">
 
   <button id="theme-toggle" class="absolute top-4 right-4 rounded-full p-2 text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors" aria-label="Toggle dark mode">
     <!-- Moon icon: shown in dark mode -->
@@ -103,16 +115,38 @@
 
   <h1 class="text-2xl font-bold">Usernode Feedback</h1>
 
+  <!-- Event banner — hidden until an active event is found -->
+  <div id="event-banner" class="hidden w-full max-w-sm rounded-xl px-4 py-3 text-center bg-gradient-to-r from-yellow-400/20 via-green-400/20 to-yellow-400/20 border border-yellow-400/40">
+    <div id="event-banner-title" class="text-sm font-bold text-yellow-700 dark:text-yellow-300"></div>
+    <div id="event-banner-sub" class="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5"></div>
+  </div>
+
   <button id="press-btn" class="w-32 h-32 rounded-full bg-violet-600 hover:bg-violet-500 active:scale-95 transition-all text-white text-xl font-bold shadow-lg shadow-violet-600/30">
     Press!
   </button>
 
-  <div id="count" class="text-lg text-zinc-500 dark:text-zinc-400">0 total presses</div>
+  <div id="count" class="text-lg text-zinc-500 dark:text-zinc-400">0 total score</div>
+
+  <!-- Personal stats widget -->
+  <div class="w-full max-w-sm bg-zinc-50 dark:bg-zinc-900 rounded-xl px-4 py-3 space-y-2.5">
+    <div class="flex items-center justify-between">
+      <span id="streak-label" class="text-sm font-medium text-zinc-500 dark:text-zinc-400">Loading…</span>
+      <span id="best-streak-label" class="text-xs text-zinc-400 dark:text-zinc-500"></span>
+    </div>
+    <!-- 7-day streak tracker -->
+    <div id="streak-tracker" class="flex justify-between"></div>
+  </div>
 
   <div class="w-full max-w-sm">
-    <h2 class="text-sm font-medium text-zinc-500 mb-2 text-center">Leaderboard</h2>
+    <div class="flex items-center justify-between mb-2">
+      <h2 class="text-sm font-medium text-zinc-500">Leaderboard</h2>
+      <span class="text-xs text-zinc-400 dark:text-zinc-500 font-mono">Score</span>
+    </div>
     <div id="leaderboard" class="space-y-1"></div>
   </div>
+
+  <!-- Streak toast (fixed, slides up from bottom) -->
+  <div id="streak-toast" class="fixed bottom-8 left-1/2 hidden bg-orange-500 text-white px-5 py-2 rounded-full text-sm font-semibold shadow-lg z-50 whitespace-nowrap pointer-events-none"></div>
 
   <script>
     let audioCtx = null;
@@ -132,7 +166,7 @@
       osc.stop(audioCtx.currentTime + 0.08);
     }
 
-    function spawnStar(x, y) {
+    function spawnStar(x, y, color) {
       const star = document.createElement('span');
       star.textContent = '★';
       star.className = 'star-particle';
@@ -141,7 +175,7 @@
         'left:' + (x - 10) + 'px',
         'top:' + (y - 10) + 'px',
         'font-size:20px',
-        'color:#facc15',
+        'color:' + (color || '#facc15'),
         'pointer-events:none',
         'z-index:9999',
         'user-select:none',
@@ -151,57 +185,205 @@
       setTimeout(() => star.remove(), 620);
     }
 
+    function spawnMilestoneBurst(x, y) {
+      const colors = ['#fb923c', '#f97316', '#ef4444', '#fbbf24', '#f59e0b'];
+      const offsets = [[-20,-15],[20,-15],[0,-25],[25,5],[-25,5],[0,10]];
+      offsets.forEach(([dx, dy], i) => {
+        const star = document.createElement('span');
+        star.textContent = '★';
+        star.className = 'burst-particle';
+        star.style.cssText = [
+          'position:fixed',
+          'left:' + (x + dx - 10) + 'px',
+          'top:' + (y + dy - 10) + 'px',
+          'font-size:' + (16 + i * 2) + 'px',
+          'color:' + colors[i % colors.length],
+          'pointer-events:none',
+          'z-index:9999',
+          'user-select:none',
+          'line-height:1',
+          'animation-delay:' + (i * 40) + 'ms',
+        ].join(';');
+        document.body.appendChild(star);
+        setTimeout(() => star.remove(), 800);
+      });
+    }
+
+    let toastTimer = null;
+    function showToast(msg) {
+      const el = document.getElementById('streak-toast');
+      el.textContent = msg;
+      el.classList.remove('hidden', 'toast-visible');
+      void el.offsetWidth; // force reflow to restart animation
+      el.classList.add('toast-visible');
+      el.style.transform = 'translateX(-50%) translateY(0)';
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => el.classList.add('hidden'), 2800);
+    }
+
     const params = new URLSearchParams(window.location.search);
     const token = params.get('token') || '';
     const headers = token ? { 'x-usernode-token': token } : {};
 
-    async function loadLeaderboard() {
-      const res = await fetch('/api/leaderboard', { headers });
-      if (!res.ok) return;
-      const { leaderboard } = await res.json();
-      const el = document.getElementById('leaderboard');
-      if (!leaderboard.length) {
-        el.innerHTML = '<p class="text-center text-zinc-400 dark:text-zinc-600 text-sm">No presses yet</p>';
-        return;
-      }
-      // Top-three finishers get premium metallic sheens built from the
-      // exact gold / silver / bronze base hexes (#FFD700 / #C0C0C0 / #CD7F32).
-      // Each gradient runs a soft light highlight -> base -> dark edge at 135deg
-      // for a subtle brushed-metal look; dark text keeps them legible in both
-      // light and dark mode, and a tinted ring adds the elevated outline.
-      const podium = [
-        { // gold
-          style: 'background:linear-gradient(135deg,#FFF1A8 0%,#FFD700 45%,#C9A227 100%);' +
-                 'box-shadow:inset 0 0 0 1px rgba(201,162,39,0.55);',
-          icon: '🥇',
-        },
-        { // silver
-          style: 'background:linear-gradient(135deg,#F2F2F2 0%,#C0C0C0 45%,#8A8A8A 100%);' +
-                 'box-shadow:inset 0 0 0 1px rgba(138,138,138,0.55);',
-          icon: '🥈',
-        },
-        { // bronze
-          style: 'background:linear-gradient(135deg,#E6B07F 0%,#CD7F32 45%,#8C551F 100%);' +
-                 'box-shadow:inset 0 0 0 1px rgba(140,85,31,0.55);',
-          icon: '🥉',
-        },
-      ];
-      el.innerHTML = leaderboard.map((r, i) => {
-        const p = podium[i];
-        const rankLabel = p
-          ? '<span>' + p.icon + '</span>'
-          : '<span class="tabular-nums text-zinc-400 dark:text-zinc-500">' + (i + 1) + '.</span>';
-        const rowAttrs = p
-          ? 'class="flex items-center justify-between px-3 py-1.5 rounded-md font-medium text-zinc-900" style="' + p.style + '"'
-          : 'class="flex items-center justify-between px-3 py-1.5 rounded-md text-zinc-600 dark:text-zinc-400"';
-        return '<div ' + rowAttrs + '>' +
-          '<span class="flex items-center gap-2"><span class="w-5 text-center">' + rankLabel + '</span>' +
-          '<span>' + r.username + '</span></span>' +
-          '<span class="font-mono">' + r.presses + '</span></div>';
-      }).join('');
-      const total = leaderboard.reduce((s, r) => s + parseInt(r.presses), 0);
-      document.getElementById('count').textContent = total + ' total presses';
+    // Track the user's current streak so we can detect increases
+    let currentStreak = 0;
+
+    // ── Active event ────────────────────────────────────────────────────────────
+
+    function formatEventEnd(isoString) {
+      const d = new Date(isoString);
+      return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })
+             + ' ' + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'UTC' })
+             + ' UTC';
     }
+
+    function applyEventButtonStyle(event) {
+      const btn = document.getElementById('press-btn');
+      if (event) {
+        btn.className = 'w-32 h-32 rounded-full bg-green-600 hover:bg-green-500 active:scale-95 transition-all text-white text-3xl font-bold shadow-lg shadow-green-600/30 ring-4 ring-yellow-400 animate-pulse';
+        btn.textContent = '⚽';
+      } else {
+        btn.className = 'w-32 h-32 rounded-full bg-violet-600 hover:bg-violet-500 active:scale-95 transition-all text-white text-xl font-bold shadow-lg shadow-violet-600/30';
+        btn.textContent = 'Press!';
+      }
+    }
+
+    async function loadActiveEvent() {
+      try {
+        const res = await fetch('/api/active-event');
+        if (!res.ok) return;
+        const { event } = await res.json();
+        const banner = document.getElementById('event-banner');
+        if (event) {
+          document.getElementById('event-banner-title').textContent =
+            event.name + ' — ' + event.multiplier + '× points!';
+          document.getElementById('event-banner-sub').textContent =
+            (event.description ? event.description + ' ' : '') +
+            'Ends ' + formatEventEnd(event.ends_at);
+          banner.classList.remove('hidden');
+        } else {
+          banner.classList.add('hidden');
+        }
+        applyEventButtonStyle(event);
+      } catch {}
+    }
+
+    // ── My stats & streak tracker ────────────────────────────────────────────────
+
+    const DAY_NAMES = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+
+    function renderStreakTracker(days) {
+      const container = document.getElementById('streak-tracker');
+      if (!days || !days.length) { container.innerHTML = ''; return; }
+      container.innerHTML = days.map(d => {
+        const dow = DAY_NAMES[new Date(d.date + 'T12:00:00Z').getUTCDay()];
+        let circleClass, circleInner;
+        if (d.pressed) {
+          circleClass = 'w-9 h-9 rounded-full bg-orange-400 dark:bg-orange-500 flex items-center justify-center';
+          circleInner = '<span style="font-size:18px;line-height:1">🔥</span>';
+        } else if (d.is_today) {
+          circleClass = 'w-9 h-9 rounded-full border-2 border-dashed border-violet-400 dark:border-violet-500 flex items-center justify-center';
+          circleInner = '<span class="text-zinc-300 dark:text-zinc-600" style="font-size:20px;line-height:1">○</span>';
+        } else {
+          circleClass = 'w-9 h-9 rounded-full bg-zinc-200 dark:bg-zinc-800 flex items-center justify-center';
+          circleInner = '<span class="text-zinc-400 dark:text-zinc-600" style="font-size:14px;line-height:1">·</span>';
+        }
+        return '<div class="flex flex-col items-center gap-1">'
+          + '<span class="text-xs text-zinc-400 dark:text-zinc-500">' + dow + '</span>'
+          + '<div class="' + circleClass + '">' + circleInner + '</div>'
+          + '</div>';
+      }).join('');
+    }
+
+    function renderStreakLabel(stats) {
+      const label = document.getElementById('streak-label');
+      const best  = document.getElementById('best-streak-label');
+      const streak = stats.current_streak;
+      const alive  = stats.streak_active && streak > 0;
+
+      if (!alive) {
+        label.textContent = 'Press to start a streak! 🔥';
+      } else if (stats.pressed_today) {
+        label.textContent = '🔥 ' + streak + '-day streak — keep it going!';
+      } else {
+        label.textContent = '🔥 ' + streak + '-day streak — press today to continue!';
+      }
+
+      if (stats.longest_streak > 0) {
+        best.textContent = 'Best: ' + stats.longest_streak + ' days';
+      } else {
+        best.textContent = '';
+      }
+    }
+
+    async function loadMyStats() {
+      try {
+        const res = await fetch('/api/my-stats', { headers });
+        if (!res.ok) return;
+        const stats = await res.json();
+        currentStreak = stats.current_streak;
+        renderStreakLabel(stats);
+        renderStreakTracker(stats.streak_days);
+      } catch {}
+    }
+
+    // ── Leaderboard ──────────────────────────────────────────────────────────────
+
+    async function loadLeaderboard() {
+      try {
+        const res = await fetch('/api/leaderboard', { headers });
+        if (!res.ok) return;
+        const { leaderboard } = await res.json();
+        const el = document.getElementById('leaderboard');
+        if (!leaderboard.length) {
+          el.innerHTML = '<p class="text-center text-zinc-400 dark:text-zinc-600 text-sm">No presses yet</p>';
+          return;
+        }
+        // Top-three finishers get premium metallic sheens built from the
+        // exact gold / silver / bronze base hexes (#FFD700 / #C0C0C0 / #CD7F32).
+        // Each gradient runs a soft light highlight -> base -> dark edge at 135deg
+        // for a subtle brushed-metal look; dark text keeps them legible in both
+        // light and dark mode, and a tinted ring adds the elevated outline.
+        const podium = [
+          { // gold
+            style: 'background:linear-gradient(135deg,#FFF1A8 0%,#FFD700 45%,#C9A227 100%);' +
+                   'box-shadow:inset 0 0 0 1px rgba(201,162,39,0.55);',
+            icon: '🥇',
+          },
+          { // silver
+            style: 'background:linear-gradient(135deg,#F2F2F2 0%,#C0C0C0 45%,#8A8A8A 100%);' +
+                   'box-shadow:inset 0 0 0 1px rgba(138,138,138,0.55);',
+            icon: '🥈',
+          },
+          { // bronze
+            style: 'background:linear-gradient(135deg,#E6B07F 0%,#CD7F32 45%,#8C551F 100%);' +
+                   'box-shadow:inset 0 0 0 1px rgba(140,85,31,0.55);',
+            icon: '🥉',
+          },
+        ];
+        el.innerHTML = leaderboard.map((r, i) => {
+          const p = podium[i];
+          const rankLabel = p
+            ? '<span>' + p.icon + '</span>'
+            : '<span class="tabular-nums text-zinc-400 dark:text-zinc-500">' + (i + 1) + '.</span>';
+          const rowAttrs = p
+            ? 'class="flex items-center justify-between px-3 py-1.5 rounded-md font-medium text-zinc-900" style="' + p.style + '"'
+            : 'class="flex items-center justify-between px-3 py-1.5 rounded-md text-zinc-600 dark:text-zinc-400"';
+          const streak = parseInt(r.current_streak) || 0;
+          const flameBadge = streak >= 3
+            ? '<span class="ml-1 text-xs px-1 rounded bg-orange-100 dark:bg-orange-900/30 text-orange-600 dark:text-orange-400">🔥' + streak + '</span>'
+            : '';
+          return '<div ' + rowAttrs + '>'
+            + '<span class="flex items-center gap-2"><span class="w-5 text-center">' + rankLabel + '</span>'
+            + '<span>' + r.username + '</span>' + flameBadge + '</span>'
+            + '<span class="font-mono">' + parseInt(r.score) + '</span></div>';
+        }).join('');
+        const total = leaderboard.reduce((s, r) => s + parseInt(r.score), 0);
+        document.getElementById('count').textContent = total + ' total score';
+      } catch {}
+    }
+
+    // ── Press handler ────────────────────────────────────────────────────────────
 
     document.getElementById('press-btn').addEventListener('click', async (event) => {
       playClickSound();
@@ -211,15 +393,35 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...headers },
         });
-        if (res.ok) loadLeaderboard();
-        else if (res.status === 401) document.getElementById('count').textContent = 'Sign in to press!';
+        if (!res.ok) {
+          if (res.status === 401) document.getElementById('count').textContent = 'Sign in to press!';
+          return;
+        }
+        const data = await res.json();
+        const newStreak = data.current_streak || 0;
+        const prevStreak = currentStreak;
+        currentStreak = newStreak;
+
+        // Reload leaderboard and stats
+        loadLeaderboard();
+        loadMyStats();
+
+        // Show toast + burst if streak increased
+        if (newStreak > prevStreak && newStreak > 0) {
+          showToast('🔥 ' + newStreak + '-day streak' + (newStreak === 1 ? ' started!' : '!'));
+          const milestones = [3, 7, 14, 30];
+          if (milestones.includes(newStreak)) {
+            spawnMilestoneBurst(event.clientX, event.clientY);
+          }
+        }
       } catch {}
     });
 
-    // Dark mode toggle
+    // ── Dark mode toggle ─────────────────────────────────────────────────────────
+
     const themeToggle = document.getElementById('theme-toggle');
-    const iconMoon = document.getElementById('icon-moon');
-    const iconSun = document.getElementById('icon-sun');
+    const iconMoon    = document.getElementById('icon-moon');
+    const iconSun     = document.getElementById('icon-sun');
 
     function applyTheme(isDark) {
       if (isDark) {
@@ -243,6 +445,10 @@
       try { localStorage.setItem('theme', next ? 'dark' : 'light'); } catch (_) {}
     });
 
+    // ── Init ─────────────────────────────────────────────────────────────────────
+
+    loadActiveEvent();
+    loadMyStats();
     loadLeaderboard();
   </script>
 </body>
