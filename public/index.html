@@ -73,6 +73,20 @@
   <title>Usernode Feedback</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script>tailwind.config = { darkMode: 'class' }</script>
+  <style>
+    @keyframes starFloat {
+      from { transform: translateY(0) scale(1); opacity: 1; }
+      to   { transform: translateY(-90px) scale(0.6); opacity: 0; }
+    }
+    .star-particle {
+      animation: starFloat 0.6s ease-out forwards;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .star-particle {
+        animation-duration: 0.01s;
+      }
+    }
+  </style>
 </head>
 <body class="bg-white dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 min-h-screen flex flex-col items-center justify-center gap-8 p-4 relative">
 
@@ -101,6 +115,42 @@
   </div>
 
   <script>
+    let audioCtx = null;
+
+    function playClickSound() {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(880, audioCtx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(440, audioCtx.currentTime + 0.08);
+      gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.08);
+      osc.start(audioCtx.currentTime);
+      osc.stop(audioCtx.currentTime + 0.08);
+    }
+
+    function spawnStar(x, y) {
+      const star = document.createElement('span');
+      star.textContent = '★';
+      star.className = 'star-particle';
+      star.style.cssText = [
+        'position:fixed',
+        'left:' + (x - 10) + 'px',
+        'top:' + (y - 10) + 'px',
+        'font-size:20px',
+        'color:#facc15',
+        'pointer-events:none',
+        'z-index:9999',
+        'user-select:none',
+        'line-height:1',
+      ].join(';');
+      document.body.appendChild(star);
+      setTimeout(() => star.remove(), 620);
+    }
+
     const params = new URLSearchParams(window.location.search);
     const token = params.get('token') || '';
     const headers = token ? { 'x-usernode-token': token } : {};
@@ -123,7 +173,9 @@
       document.getElementById('count').textContent = total + ' total presses';
     }
 
-    document.getElementById('press-btn').addEventListener('click', async () => {
+    document.getElementById('press-btn').addEventListener('click', async (event) => {
+      playClickSound();
+      spawnStar(event.clientX, event.clientY);
       try {
         const res = await fetch('/api/press', {
           method: 'POST',
