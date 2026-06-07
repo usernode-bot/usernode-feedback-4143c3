@@ -13,6 +13,12 @@ const JWT_SECRET = process.env.JWT_SECRET;
 // Everything else requires a valid platform-issued JWT.
 const PUBLIC_API_PATHS = new Set(['/health']);
 
+// Per-user submission rate limit: at most one submission every 6 seconds.
+// Keyed by req.user.id, tracked in-memory (fine for a single container —
+// resets on restart, which only ever loosens the limit).
+const SUBMIT_COOLDOWN_MS = 6000;
+const lastSubmitAt = new Map();
+
 app.use(express.json());
 
 // Verify platform-issued JWT if one was passed, then enforce auth on
@@ -40,6 +46,18 @@ app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 // Button press
 app.post('/api/press', async (req, res) => {
   try {
+    const now = Date.now();
+    const last = lastSubmitAt.get(req.user.id);
+    if (last && now - last < SUBMIT_COOLDOWN_MS) {
+      const retryAfterMs = SUBMIT_COOLDOWN_MS - (now - last);
+      res.set('Retry-After', String(Math.ceil(retryAfterMs / 1000)));
+      return res.status(429).json({
+        error: 'You\'re submitting too fast. Please wait a moment before submitting again.',
+        retryAfterMs,
+      });
+    }
+    lastSubmitAt.set(req.user.id, now);
+
     await pool.query(`
       INSERT INTO presses (user_id, username) VALUES ($1, $2)
     `, [req.user.id, req.user.username]);
