@@ -8,6 +8,8 @@ const port = process.env.PORT || 3000;
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const JWT_SECRET = process.env.JWT_SECRET;
 
+const DAILY_ENERGY_LIMIT = 500;
+
 // Paths that stay open without authentication. Add a path here (and add it
 // with `app.get`/`app.post` below) if you deliberately want it public.
 // Everything else requires a valid platform-issued JWT.
@@ -37,13 +39,49 @@ app.use((req, res, next) => {
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
+function nextUtcMidnight() {
+  const now = new Date();
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1)).toISOString();
+}
+
+async function getDailyPressCount(userId) {
+  const { rows } = await pool.query(`
+    SELECT COUNT(*) AS count
+    FROM presses
+    WHERE user_id = $1
+      AND created_at >= DATE_TRUNC('day', NOW() AT TIME ZONE 'UTC')
+  `, [userId]);
+  return parseInt(rows[0].count, 10);
+}
+
 // Button press
 app.post('/api/press', async (req, res) => {
   try {
+    const count = await getDailyPressCount(req.user.id);
+    if (count >= DAILY_ENERGY_LIMIT) {
+      return res.status(429).json({
+        error: 'daily_limit_reached',
+        remaining: 0,
+        reset_at: nextUtcMidnight(),
+      });
+    }
     await pool.query(`
       INSERT INTO presses (user_id, username) VALUES ($1, $2)
     `, [req.user.id, req.user.username]);
-    res.json({ ok: true });
+    res.json({ ok: true, remaining: DAILY_ENERGY_LIMIT - (count + 1) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Daily energy status
+app.get('/api/energy', async (req, res) => {
+  try {
+    const count = await getDailyPressCount(req.user.id);
+    res.json({
+      remaining: DAILY_ENERGY_LIMIT - count,
+      reset_at: nextUtcMidnight(),
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
