@@ -74,6 +74,10 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <script>tailwind.config = { darkMode: 'class' }</script>
   <style>
+    #battery-fill { transition: width 0.35s ease, fill 0.35s ease; }
+    #toast { transition: opacity 0.25s ease, transform 0.25s ease; }
+    #toast.toast-hidden { opacity: 0; transform: translateY(8px); pointer-events: none; }
+    #toast.toast-visible { opacity: 1; transform: translateY(0); }
     @keyframes starFloat {
       from { transform: translateY(0) scale(1); opacity: 1; }
       to   { transform: translateY(-90px) scale(0.6); opacity: 0; }
@@ -107,6 +111,19 @@
     DONT PRESS
   </button>
 
+  <!-- Energy display: battery icon + text readout -->
+  <div class="flex flex-col items-center gap-1.5">
+    <svg width="64" height="28" viewBox="0 0 64 28" aria-hidden="true">
+      <!-- nub -->
+      <rect x="56" y="9" width="8" height="10" rx="2" fill="currentColor" class="text-zinc-400 dark:text-zinc-600"/>
+      <!-- body outline -->
+      <rect x="0" y="2" width="54" height="24" rx="4" fill="none" stroke="currentColor" stroke-width="2" class="text-zinc-400 dark:text-zinc-600"/>
+      <!-- fill: x=3 y=5, max-width=48 -->
+      <rect id="battery-fill" x="3" y="5" width="48" height="18" rx="2" fill="#22c55e"/>
+    </svg>
+    <div id="energy-text" class="text-sm text-zinc-500 dark:text-zinc-400">500 / 500 energy</div>
+  </div>
+
   <div id="count" class="text-lg text-zinc-500 dark:text-zinc-400">0 total presses</div>
 
   <div class="w-full max-w-sm">
@@ -114,7 +131,15 @@
     <div id="leaderboard" class="space-y-1"></div>
   </div>
 
+  <!-- Toast notification (bottom-right, slides up on show) -->
+  <div id="toast" class="toast-hidden fixed bottom-4 right-4 max-w-xs bg-zinc-900 text-white text-sm px-4 py-3 rounded-lg border border-zinc-700 shadow-lg cursor-pointer z-50" role="alert">
+    <span id="toast-msg"></span>
+  </div>
+
   <script>
+    const DAILY_LIMIT = 500;
+    const MAX_FILL_WIDTH = 48;
+
     let audioCtx = null;
 
     function playClickSound() {
@@ -154,6 +179,75 @@
     const params = new URLSearchParams(window.location.search);
     const token = params.get('token') || '';
     const headers = token ? { 'x-usernode-token': token } : {};
+
+    let toastShownThisDepletion = false;
+    let midnightTimer = null;
+
+    function formatResetTime(resetAt) {
+      const d = new Date(resetAt);
+      return String(d.getUTCHours()).padStart(2, '0') + ':' + String(d.getUTCMinutes()).padStart(2, '0') + ' UTC';
+    }
+
+    function updateBattery(remaining) {
+      const pct = Math.max(0, Math.min(1, remaining / DAILY_LIMIT));
+      const fillEl = document.getElementById('battery-fill');
+      fillEl.setAttribute('width', Math.round(pct * MAX_FILL_WIDTH));
+      fillEl.setAttribute('fill', pct > 0.5 ? '#22c55e' : pct > 0.2 ? '#eab308' : '#ef4444');
+    }
+
+    function updateEnergyText(remaining, resetAt) {
+      const el = document.getElementById('energy-text');
+      el.textContent = remaining <= 0
+        ? 'Recharges at ' + formatResetTime(resetAt)
+        : remaining + ' / ' + DAILY_LIMIT + ' energy';
+    }
+
+    function setButtonEnabled(enabled) {
+      const btn = document.getElementById('press-btn');
+      btn.disabled = !enabled;
+      if (enabled) {
+        btn.classList.remove('opacity-50', 'cursor-not-allowed');
+        btn.classList.add('hover:bg-violet-500', 'active:scale-95');
+      } else {
+        btn.classList.add('opacity-50', 'cursor-not-allowed');
+        btn.classList.remove('hover:bg-violet-500', 'active:scale-95');
+      }
+    }
+
+    function updateEnergy(remaining, resetAt) {
+      updateBattery(remaining);
+      updateEnergyText(remaining, resetAt);
+      setButtonEnabled(remaining > 0);
+
+      if (midnightTimer) clearTimeout(midnightTimer);
+      if (remaining <= 0 && resetAt) {
+        const msUntilReset = new Date(resetAt) - Date.now();
+        if (msUntilReset > 0) {
+          midnightTimer = setTimeout(async () => {
+            toastShownThisDepletion = false;
+            const res = await fetch('/api/energy', { headers });
+            if (res.ok) {
+              const data = await res.json();
+              updateEnergy(data.remaining, data.reset_at);
+            }
+          }, msUntilReset + 1000);
+        }
+      }
+    }
+
+    function showToast(message) {
+      const toast = document.getElementById('toast');
+      document.getElementById('toast-msg').textContent = message;
+      toast.classList.remove('toast-hidden');
+      toast.classList.add('toast-visible');
+      const dismiss = () => {
+        toast.classList.remove('toast-visible');
+        toast.classList.add('toast-hidden');
+        toast.onclick = null;
+      };
+      toast.onclick = dismiss;
+      setTimeout(dismiss, 4000);
+    }
 
     async function loadLeaderboard() {
       const res = await fetch('/api/leaderboard', { headers });
@@ -218,6 +312,13 @@
       osc.onended = () => { osc.disconnect(); gain.disconnect(); };
     }
 
+    async function loadEnergy() {
+      const res = await fetch('/api/energy', { headers });
+      if (!res.ok) return;
+      const data = await res.json();
+      updateEnergy(data.remaining, data.reset_at);
+    }
+
     document.getElementById('press-btn').addEventListener('click', async (event) => {
       playBuzzer();
       spawnStar(event.clientX, event.clientY);
@@ -226,8 +327,24 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...headers },
         });
-        if (res.ok) loadLeaderboard();
-        else if (res.status === 401) document.getElementById('count').textContent = 'Sign in to press!';
+        if (res.ok) {
+          const data = await res.json();
+          loadLeaderboard();
+          updateEnergy(data.remaining, data.reset_at);
+          if (data.remaining === 0 && !toastShownThisDepletion) {
+            toastShownThisDepletion = true;
+            showToast('⚡ You\'re out of energy! Recharges at ' + formatResetTime(data.reset_at));
+          }
+        } else if (res.status === 429) {
+          const data = await res.json();
+          updateEnergy(0, data.reset_at);
+          if (!toastShownThisDepletion) {
+            toastShownThisDepletion = true;
+            showToast('⚡ You\'re out of energy! Recharges at ' + formatResetTime(data.reset_at));
+          }
+        } else if (res.status === 401) {
+          document.getElementById('count').textContent = 'Sign in to press!';
+        }
       } catch {}
     });
 
@@ -258,7 +375,7 @@
       try { localStorage.setItem('theme', next ? 'dark' : 'light'); } catch (_) {}
     });
 
-    loadLeaderboard();
+    Promise.all([loadLeaderboard(), loadEnergy()]);
   </script>
 </body>
 </html>
