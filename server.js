@@ -8,6 +8,8 @@ const port = process.env.PORT || 3000;
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const JWT_SECRET = process.env.JWT_SECRET;
 
+const DAILY_ENERGY_LIMIT = 500;
+
 // Paths that stay open without authentication. Add a path here (and add it
 // with `app.get`/`app.post` below) if you deliberately want it public.
 // Everything else requires a valid platform-issued JWT.
@@ -37,6 +39,21 @@ app.use((req, res, next) => {
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
+function nextUtcMidnight() {
+  const now = new Date();
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1)).toISOString();
+}
+
+async function getDailyPressCount(userId) {
+  const { rows } = await pool.query(`
+    SELECT COUNT(*) AS count
+    FROM presses
+    WHERE user_id = $1
+      AND created_at >= DATE_TRUNC('day', NOW() AT TIME ZONE 'UTC')
+  `, [userId]);
+  return parseInt(rows[0].count, 10);
+}
+
 // Active event — public so the banner can load before the user presses
 app.get('/api/active-event', async (_req, res) => {
   try {
@@ -53,9 +70,31 @@ app.get('/api/active-event', async (_req, res) => {
   }
 });
 
+// Daily energy status
+app.get('/api/energy', async (req, res) => {
+  try {
+    const count = await getDailyPressCount(req.user.id);
+    res.json({
+      remaining: DAILY_ENERGY_LIMIT - count,
+      reset_at: nextUtcMidnight(),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Button press
 app.post('/api/press', async (req, res) => {
   try {
+    const dailyCount = await getDailyPressCount(req.user.id);
+    if (dailyCount >= DAILY_ENERGY_LIMIT) {
+      return res.status(429).json({
+        error: 'daily_limit_reached',
+        remaining: 0,
+        reset_at: nextUtcMidnight(),
+      });
+    }
+
     // Find the highest active event multiplier (default 1 if none active)
     const evtRes = await pool.query(`
       SELECT
@@ -103,7 +142,7 @@ app.post('/api/press', async (req, res) => {
     `, [req.user.id, req.user.username]);
 
     const { current_streak, longest_streak } = streakRes.rows[0];
-    res.json({ ok: true, current_streak, longest_streak, event_active: eventActive, event_name: eventName, event_multiplier: eventMultiplier });
+    res.json({ ok: true, current_streak, longest_streak, event_active: eventActive, event_name: eventName, event_multiplier: eventMultiplier, remaining: DAILY_ENERGY_LIMIT - (dailyCount + 1), reset_at: nextUtcMidnight() });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
