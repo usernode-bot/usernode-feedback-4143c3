@@ -68,7 +68,7 @@ app.post('/api/press', async (req, res) => {
     await pool.query(`
       INSERT INTO presses (user_id, username) VALUES ($1, $2)
     `, [req.user.id, req.user.username]);
-    res.json({ ok: true, remaining: DAILY_ENERGY_LIMIT - (count + 1) });
+    res.json({ ok: true, remaining: DAILY_ENERGY_LIMIT - (count + 1), reset_at: nextUtcMidnight() });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
