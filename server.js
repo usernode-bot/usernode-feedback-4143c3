@@ -8,7 +8,7 @@ const port = process.env.PORT || 3000;
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const JWT_SECRET = process.env.JWT_SECRET;
 
-const DAILY_ENERGY_LIMIT = 500;
+const DAILY_ENERGY_LIMIT = 100;
 
 // Paths that stay open without authentication. Add a path here (and add it
 // with `app.get`/`app.post` below) if you deliberately want it public.
