@@ -185,6 +185,11 @@
 
     function formatResetTime(resetAt) {
       const d = new Date(resetAt);
+      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', timeZoneName: 'short' });
+    }
+
+    function formatResetTimeUtc(resetAt) {
+      const d = new Date(resetAt);
       return String(d.getUTCHours()).padStart(2, '0') + ':' + String(d.getUTCMinutes()).padStart(2, '0') + ' UTC';
     }
 
@@ -197,9 +202,13 @@
 
     function updateEnergyText(remaining, resetAt) {
       const el = document.getElementById('energy-text');
-      el.textContent = remaining <= 0
-        ? 'Recharges at ' + formatResetTime(resetAt)
-        : remaining + ' / ' + DAILY_LIMIT + ' energy';
+      if (remaining <= 0) {
+        el.textContent = 'Recharges at ' + formatResetTime(resetAt);
+        el.title = 'Recharges at ' + formatResetTimeUtc(resetAt);
+      } else {
+        el.textContent = remaining + ' / ' + DAILY_LIMIT + ' energy';
+        el.removeAttribute('title');
+      }
     }
 
     function setButtonEnabled(enabled) {
