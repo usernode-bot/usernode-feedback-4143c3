@@ -121,10 +121,12 @@
       <!-- fill: x=3 y=5, max-width=48 -->
       <rect id="battery-fill" x="3" y="5" width="48" height="18" rx="2" fill="#22c55e"/>
     </svg>
-    <div id="energy-text" class="text-sm text-zinc-500 dark:text-zinc-400">500 / 500 energy</div>
+    <div id="energy-text" class="text-sm text-zinc-500 dark:text-zinc-400">100 / 100 energy</div>
   </div>
 
   <div id="count" class="text-lg text-zinc-500 dark:text-zinc-400">0 total presses</div>
+
+  <div id="rate-msg" class="text-sm text-amber-600 dark:text-amber-400 h-5 transition-opacity opacity-0"></div>
 
   <div class="w-full max-w-sm">
     <h2 class="text-sm font-medium text-zinc-500 mb-2 text-center">Leaderboard</h2>
@@ -137,7 +139,7 @@
   </div>
 
   <script>
-    const DAILY_LIMIT = 500;
+    const DAILY_LIMIT = 100;
     const MAX_FILL_WIDTH = 48;
 
     let audioCtx = null;
@@ -312,6 +314,15 @@
       osc.onended = () => { osc.disconnect(); gain.disconnect(); };
     }
 
+    const rateMsg = document.getElementById('rate-msg');
+    let rateMsgTimer = null;
+    function showRateMsg(text) {
+      rateMsg.textContent = text;
+      rateMsg.classList.remove('opacity-0');
+      if (rateMsgTimer) clearTimeout(rateMsgTimer);
+      rateMsgTimer = setTimeout(() => rateMsg.classList.add('opacity-0'), 3000);
+    }
+
     async function loadEnergy() {
       const res = await fetch('/api/energy', { headers });
       if (!res.ok) return;
@@ -336,11 +347,17 @@
             showToast('⚡ You\'re out of energy! Recharges at ' + formatResetTime(data.reset_at));
           }
         } else if (res.status === 429) {
-          const data = await res.json();
-          updateEnergy(0, data.reset_at);
-          if (!toastShownThisDepletion) {
-            toastShownThisDepletion = true;
-            showToast('⚡ You\'re out of energy! Recharges at ' + formatResetTime(data.reset_at));
+          let data = null;
+          try { data = await res.json(); } catch {}
+          if (data && data.reset_at) {
+            updateEnergy(0, data.reset_at);
+            if (!toastShownThisDepletion) {
+              toastShownThisDepletion = true;
+              showToast('⚡ You\'re out of energy! Recharges at ' + formatResetTime(data.reset_at));
+            }
+          } else {
+            const msg = (data && data.error) ? data.error : 'Please wait a moment before submitting again.';
+            showRateMsg(msg);
           }
         } else if (res.status === 401) {
           document.getElementById('count').textContent = 'Sign in to press!';
