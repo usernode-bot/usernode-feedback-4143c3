@@ -107,7 +107,7 @@
 </head>
 <body class="bg-white dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 min-h-screen flex flex-col items-center justify-center gap-8 p-4 relative">
 
-  <button id="theme-toggle" class="absolute top-4 right-4 rounded-full p-2 text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors" aria-label="Toggle dark mode">
+  <button id="theme-toggle" class="absolute top-4 right-4 rounded-full p-2 text-zinc-400 hover:text-teal-600 dark:hover:text-teal-400 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500" aria-label="Toggle dark mode">
     <!-- Moon icon: shown in dark mode -->
     <svg id="icon-moon" xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
       <path stroke-linecap="round" stroke-linejoin="round" d="M21 12.79A9 9 0 1111.21 3a7 7 0 109.79 9.79z" />
@@ -120,7 +120,7 @@
 
   <h1 class="text-2xl font-bold">Usernode Feedback</h1>
 
-  <button id="press-btn" class="w-32 h-32 rounded-full active:scale-95 transition-transform text-white text-xl font-bold">
+  <button id="press-btn" class="w-32 h-32 rounded-full active:scale-95 transition-all text-white text-xl font-bold shadow-lg shadow-teal-600/30 focus:outline-none focus-visible:ring-4 focus-visible:ring-teal-400/60">
     Press!
   </button>
 
@@ -135,12 +135,16 @@
       <rect id="battery-fill" x="3" y="5" width="48" height="18" rx="2" fill="#22c55e"/>
     </svg>
     <div id="energy-text" class="text-sm text-zinc-500 dark:text-zinc-400">100 / 100 energy</div>
+    <div id="energy-countdown" class="text-xs text-zinc-400 dark:text-zinc-500">Energy full</div>
+    <div id="energy-speed" class="text-xs text-zinc-400 dark:text-zinc-500">+1 energy every 30s</div>
   </div>
 
   <div id="count" class="text-lg text-zinc-500 dark:text-zinc-400">0 total presses</div>
 
+  <div id="rate-msg" class="text-sm text-amber-600 dark:text-amber-400 h-5 transition-opacity opacity-0"></div>
+
   <div class="w-full max-w-sm">
-    <h2 class="text-sm font-medium text-zinc-500 mb-2 text-center">Leaderboard</h2>
+    <h2 class="text-sm font-semibold text-teal-600 dark:text-teal-400 mb-2 text-center">Leaderboard</h2>
     <div id="leaderboard" class="space-y-1"></div>
   </div>
 
@@ -150,7 +154,13 @@
   </div>
 
   <script>
-    const DAILY_LIMIT = 100;
+    // Cap and regen rate are driven by the API payload; these are just
+    // first-paint fallbacks until the first /api/energy response lands.
+    let cap = 100;
+    let regenInterval = 30;
+    let currentEnergy = cap;
+    let nextChargeAt = null; // epoch ms of the next +1, or null when full
+    let countdownTimer = null;
     const MAX_FILL_WIDTH = 48;
 
     let audioCtx = null;
@@ -192,27 +202,86 @@
     const params = new URLSearchParams(window.location.search);
     const token = params.get('token') || '';
     const headers = token ? { 'x-usernode-token': token } : {};
+    const isDemo = params.get('demo') === '1';
+
+    // Preserve the demo flag so the staging ?demo=1 preview stays synthetic
+    // across fetches.
+    const apiUrl = (path) => path + (isDemo ? (path.includes('?') ? '&' : '?') + 'demo=1' : '');
 
     let toastShownThisDepletion = false;
-    let midnightTimer = null;
 
-    function formatResetTime(resetAt) {
-      const d = new Date(resetAt);
-      return String(d.getUTCHours()).padStart(2, '0') + ':' + String(d.getUTCMinutes()).padStart(2, '0') + ' UTC';
+    // "M:SS" countdown to the next charge. Always non-negative.
+    function formatCountdown(ms) {
+      const total = Math.max(0, Math.ceil(ms / 1000));
+      const m = Math.floor(total / 60);
+      const s = total % 60;
+      return m + ':' + String(s).padStart(2, '0');
     }
 
-    function updateBattery(remaining) {
-      const pct = Math.max(0, Math.min(1, remaining / DAILY_LIMIT));
+    // "30s" / "1m 30s" — human-readable regen rate.
+    function formatInterval(sec) {
+      if (sec < 60) return sec + 's';
+      const m = Math.floor(sec / 60);
+      const s = sec % 60;
+      return s ? m + 'm ' + s + 's' : m + 'm';
+    }
+
+    function updateBattery(energy) {
+      const pct = Math.max(0, Math.min(1, energy / cap));
       const fillEl = document.getElementById('battery-fill');
       fillEl.setAttribute('width', Math.round(pct * MAX_FILL_WIDTH));
       fillEl.setAttribute('fill', pct > 0.5 ? '#22c55e' : pct > 0.2 ? '#eab308' : '#ef4444');
     }
 
-    function updateEnergyText(remaining, resetAt) {
-      const el = document.getElementById('energy-text');
-      el.textContent = remaining <= 0
-        ? 'Recharges at ' + formatResetTime(resetAt)
-        : remaining + ' / ' + DAILY_LIMIT + ' energy';
+    function renderSpeedLabel() {
+      document.getElementById('energy-speed').textContent =
+        '+1 energy every ' + formatInterval(regenInterval);
+    }
+
+    // Guarded so a missing/`full` timestamp renders "Energy full", never NaN.
+    function renderCountdown() {
+      const el = document.getElementById('energy-countdown');
+      if (currentEnergy >= cap || !nextChargeAt) {
+        el.textContent = 'Energy full';
+        return;
+      }
+      el.textContent = 'Next +1 in ' + formatCountdown(nextChargeAt - Date.now());
+    }
+
+    function renderEnergy() {
+      updateBattery(currentEnergy);
+      document.getElementById('energy-text').textContent = currentEnergy + ' / ' + cap + ' energy';
+      setButtonEnabled(currentEnergy > 0);
+      renderCountdown();
+    }
+
+    // Adopt an authoritative payload from the server.
+    function applyEnergy(p) {
+      if (typeof p.cap === 'number') cap = p.cap;
+      if (typeof p.regen_interval_seconds === 'number') regenInterval = p.regen_interval_seconds;
+      currentEnergy = p.energy;
+      nextChargeAt = (p.full || !p.next_charge_at) ? null : new Date(p.next_charge_at).getTime();
+      renderSpeedLabel();
+      renderEnergy();
+    }
+
+    // One ticker drives the live countdown. When a charge is due we optimistically
+    // bump the number and roll the anchor forward, then re-sync against the server
+    // to correct any drift.
+    function startCountdownLoop() {
+      if (countdownTimer) clearInterval(countdownTimer);
+      countdownTimer = setInterval(() => {
+        if (currentEnergy >= cap || !nextChargeAt) { renderCountdown(); return; }
+        if (Date.now() >= nextChargeAt) {
+          currentEnergy = Math.min(cap, currentEnergy + 1);
+          nextChargeAt = currentEnergy >= cap ? null : nextChargeAt + regenInterval * 1000;
+          if (currentEnergy > 0) toastShownThisDepletion = false;
+          renderEnergy();
+          loadEnergy(); // re-sync to server truth
+        } else {
+          renderCountdown();
+        }
+      }, 1000);
     }
 
     function setButtonEnabled(enabled) {
@@ -220,31 +289,10 @@
       btn.disabled = !enabled;
       if (enabled) {
         btn.classList.remove('opacity-50', 'cursor-not-allowed');
-        btn.classList.add('hover:bg-violet-500', 'active:scale-95');
+        btn.classList.add('hover:bg-teal-500', 'active:scale-95');
       } else {
         btn.classList.add('opacity-50', 'cursor-not-allowed');
-        btn.classList.remove('hover:bg-violet-500', 'active:scale-95');
-      }
-    }
-
-    function updateEnergy(remaining, resetAt) {
-      updateBattery(remaining);
-      updateEnergyText(remaining, resetAt);
-      setButtonEnabled(remaining > 0);
-
-      if (midnightTimer) clearTimeout(midnightTimer);
-      if (remaining <= 0 && resetAt) {
-        const msUntilReset = new Date(resetAt) - Date.now();
-        if (msUntilReset > 0) {
-          midnightTimer = setTimeout(async () => {
-            toastShownThisDepletion = false;
-            const res = await fetch('/api/energy', { headers });
-            if (res.ok) {
-              const data = await res.json();
-              updateEnergy(data.remaining, data.reset_at);
-            }
-          }, msUntilReset + 1000);
-        }
+        btn.classList.remove('hover:bg-teal-500', 'active:scale-95');
       }
     }
 
@@ -310,35 +358,53 @@
       document.getElementById('count').textContent = total + ' total presses';
     }
 
+    const rateMsg = document.getElementById('rate-msg');
+    let rateMsgTimer = null;
+    function showRateMsg(text) {
+      rateMsg.textContent = text;
+      rateMsg.classList.remove('opacity-0');
+      if (rateMsgTimer) clearTimeout(rateMsgTimer);
+      rateMsgTimer = setTimeout(() => rateMsg.classList.add('opacity-0'), 3000);
+    }
+
     async function loadEnergy() {
-      const res = await fetch('/api/energy', { headers });
-      if (!res.ok) return;
-      const data = await res.json();
-      updateEnergy(data.remaining, data.reset_at);
+      try {
+        const res = await fetch(apiUrl('/api/energy'), { headers });
+        if (!res.ok) return;
+        const data = await res.json();
+        applyEnergy(data);
+      } catch {}
+    }
+
+    function depletionToast() {
+      if (toastShownThisDepletion) return;
+      toastShownThisDepletion = true;
+      const eta = nextChargeAt ? ' Next +1 in ' + formatCountdown(nextChargeAt - Date.now()) + '.' : '';
+      showToast('⚡ You\'re out of energy!' + eta);
     }
 
     document.getElementById('press-btn').addEventListener('click', async (event) => {
       playClickSound();
       spawnStar(event.clientX, event.clientY);
       try {
-        const res = await fetch('/api/press', {
+        const res = await fetch(apiUrl('/api/press'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...headers },
         });
         if (res.ok) {
           const data = await res.json();
           loadLeaderboard();
-          updateEnergy(data.remaining, data.reset_at);
-          if (data.remaining === 0 && !toastShownThisDepletion) {
-            toastShownThisDepletion = true;
-            showToast('⚡ You\'re out of energy! Recharges at ' + formatResetTime(data.reset_at));
-          }
+          applyEnergy(data);
+          if (data.energy === 0) depletionToast();
         } else if (res.status === 429) {
-          const data = await res.json();
-          updateEnergy(0, data.reset_at);
-          if (!toastShownThisDepletion) {
-            toastShownThisDepletion = true;
-            showToast('⚡ You\'re out of energy! Recharges at ' + formatResetTime(data.reset_at));
+          let data = null;
+          try { data = await res.json(); } catch {}
+          if (data && data.energy !== undefined) {
+            applyEnergy(data);
+            depletionToast();
+          } else {
+            const msg = (data && data.error) ? data.error : 'Please wait a moment before submitting again.';
+            showRateMsg(msg);
           }
         } else if (res.status === 401) {
           document.getElementById('count').textContent = 'Sign in to press!';
@@ -373,6 +439,14 @@
       try { localStorage.setItem('theme', next ? 'dark' : 'light'); } catch (_) {}
     });
 
+    // Backgrounded tabs throttle setInterval, so snap back to server truth
+    // whenever the tab becomes visible again.
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') loadEnergy();
+    });
+
+    renderSpeedLabel();
+    startCountdownLoop();
     Promise.all([loadLeaderboard(), loadEnergy()]);
   </script>
 </body>
