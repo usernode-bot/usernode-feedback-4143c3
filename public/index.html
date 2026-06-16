@@ -236,6 +236,16 @@
 
     let toastShownThisDepletion = false;
 
+    function formatResetTime(resetAt) {
+      const d = new Date(resetAt);
+      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', timeZoneName: 'short' });
+    }
+
+    function formatResetTimeUtc(resetAt) {
+      const d = new Date(resetAt);
+      return String(d.getUTCHours()).padStart(2, '0') + ':' + String(d.getUTCMinutes()).padStart(2, '0') + ' UTC';
+    }
+
     // "M:SS" countdown to the next charge. Always non-negative.
     function formatCountdown(ms) {
       const total = Math.max(0, Math.ceil(ms / 1000));
@@ -259,6 +269,17 @@
       fillEl.setAttribute('fill', pct > 0.5 ? '#22c55e' : pct > 0.2 ? '#eab308' : '#ef4444');
     }
 
+    function updateEnergyText(remaining, resetAt) {
+      const el = document.getElementById('energy-text');
+      if (remaining <= 0) {
+        el.textContent = 'Recharges at ' + formatResetTime(resetAt);
+        el.title = 'Recharges at ' + formatResetTimeUtc(resetAt);
+      } else {
+        el.textContent = remaining + ' / ' + cap + ' energy';
+        el.removeAttribute('title');
+      }
+    }
+
     function renderSpeedLabel() {
       document.getElementById('energy-speed').textContent =
         '+1 energy every ' + formatInterval(regenInterval);
@@ -276,7 +297,7 @@
 
     function renderEnergy() {
       updateBattery(currentEnergy);
-      document.getElementById('energy-text').textContent = currentEnergy + ' / ' + cap + ' energy';
+      updateEnergyText(currentEnergy, nextChargeAt);
       setButtonEnabled(currentEnergy > 0);
       renderCountdown();
     }
