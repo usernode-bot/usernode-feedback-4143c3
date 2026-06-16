@@ -433,6 +433,10 @@
       renderCountdown();
     }
 
+    function getFlashLogo() {
+      return '<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" width="70" height="70"><defs><linearGradient id="flashGrad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:#FFD700;stop-opacity:1" /><stop offset="100%" style="stop-color:#FF8C00;stop-opacity:1" /></linearGradient></defs><path d="M 55 10 L 30 50 L 50 50 L 35 90 L 65 40 L 45 40 Z" fill="url(#flashGrad)" stroke="none"/></svg>';
+    }
+
     function updateButtonState() {
       const btn   = document.getElementById('press-btn');
       const label = document.getElementById('press-btn-label');
@@ -443,7 +447,7 @@
         btn.style.background   = 'radial-gradient(circle at 38% 32%, #2dd4bf, #0d9488 52%, #0f766e)';
         btn.style.opacity      = '1';
         btn.style.cursor       = 'pointer';
-        label.textContent      = 'Press!';
+        label.innerHTML        = getFlashLogo();
       } else if (purchasedEnergy > 0) {
         buttonEnabled = true;
         btn.classList.remove('btn-ready');
@@ -451,7 +455,7 @@
         btn.style.boxShadow    = '0 0 40px rgba(251,191,36,0.3), 0 8px 32px rgba(0,0,0,0.4), inset 0 1px 1px rgba(255,255,255,0.15)';
         btn.style.opacity      = '1';
         btn.style.cursor       = 'pointer';
-        label.textContent      = '⚡ Press!';
+        label.innerHTML        = getFlashLogo();
       } else {
         buttonEnabled = false;
         btn.classList.remove('btn-ready');
@@ -459,7 +463,7 @@
         btn.style.boxShadow    = '0 4px 16px rgba(0,0,0,0.35)';
         btn.style.opacity      = '0.65';
         btn.style.cursor       = 'default';
-        label.textContent      = '⚡ Out of energy';
+        label.innerHTML        = getFlashLogo();
       }
     }
 
