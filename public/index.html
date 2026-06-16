@@ -85,6 +85,19 @@
     .star-particle {
       animation: starFloat 0.6s ease-out forwards;
     }
+    @keyframes rainbowCycle {
+      0%   { background-color: #ff0000; box-shadow: 0 10px 30px rgba(255,0,0,0.4); }
+      14%  { background-color: #ff7700; box-shadow: 0 10px 30px rgba(255,119,0,0.4); }
+      28%  { background-color: #ffff00; box-shadow: 0 10px 30px rgba(255,255,0,0.4); }
+      42%  { background-color: #00cc00; box-shadow: 0 10px 30px rgba(0,204,0,0.4); }
+      57%  { background-color: #0000ff; box-shadow: 0 10px 30px rgba(0,0,255,0.4); }
+      71%  { background-color: #4b0082; box-shadow: 0 10px 30px rgba(75,0,130,0.4); }
+      85%  { background-color: #8b00ff; box-shadow: 0 10px 30px rgba(139,0,255,0.4); }
+      100% { background-color: #ff0000; box-shadow: 0 10px 30px rgba(255,0,0,0.4); }
+    }
+    #press-btn {
+      animation: rainbowCycle 4s linear infinite;
+    }
     @media (prefers-reduced-motion: reduce) {
       .star-particle {
         animation-duration: 0.01s;
@@ -124,7 +137,7 @@
     <div id="search-results" class="mt-2 space-y-1"></div>
   </div>
 
-  <button id="press-btn" class="w-32 h-32 rounded-full bg-teal-600 hover:bg-teal-500 active:scale-95 transition-all text-white text-xl font-bold shadow-lg shadow-teal-600/30 focus:outline-none focus-visible:ring-4 focus-visible:ring-teal-400/60">
+  <button id="press-btn" class="w-32 h-32 rounded-full active:scale-95 transition-all text-white text-xl font-bold shadow-lg shadow-teal-600/30 focus:outline-none focus-visible:ring-4 focus-visible:ring-teal-400/60">
     Press!
   </button>
 
@@ -258,6 +271,16 @@
 
     let toastShownThisDepletion = false;
 
+    function formatResetTime(resetAt) {
+      const d = new Date(resetAt);
+      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', timeZoneName: 'short' });
+    }
+
+    function formatResetTimeUtc(resetAt) {
+      const d = new Date(resetAt);
+      return String(d.getUTCHours()).padStart(2, '0') + ':' + String(d.getUTCMinutes()).padStart(2, '0') + ' UTC';
+    }
+
     // "M:SS" countdown to the next charge. Always non-negative.
     function formatCountdown(ms) {
       const total = Math.max(0, Math.ceil(ms / 1000));
@@ -281,6 +304,17 @@
       fillEl.setAttribute('fill', pct > 0.5 ? '#22c55e' : pct > 0.2 ? '#eab308' : '#ef4444');
     }
 
+    function updateEnergyText(remaining, resetAt) {
+      const el = document.getElementById('energy-text');
+      if (remaining <= 0) {
+        el.textContent = 'Recharges at ' + formatResetTime(resetAt);
+        el.title = 'Recharges at ' + formatResetTimeUtc(resetAt);
+      } else {
+        el.textContent = remaining + ' / ' + cap + ' energy';
+        el.removeAttribute('title');
+      }
+    }
+
     function renderSpeedLabel() {
       document.getElementById('energy-speed').textContent =
         '+1 energy every ' + formatInterval(regenInterval);
@@ -298,7 +332,7 @@
 
     function renderEnergy() {
       updateBattery(currentEnergy);
-      document.getElementById('energy-text').textContent = currentEnergy + ' / ' + cap + ' energy';
+      updateEnergyText(currentEnergy, nextChargeAt);
       setButtonEnabled(currentEnergy > 0);
       renderCountdown();
     }
