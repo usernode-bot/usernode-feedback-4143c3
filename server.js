@@ -20,6 +20,12 @@ const REGEN_INTERVAL_MS = REGEN_INTERVAL_SECONDS * 1000;
 // Everything else requires a valid platform-issued JWT.
 const PUBLIC_API_PATHS = new Set(['/health']);
 
+// Per-user submission rate limit: at most one submission every 6 seconds.
+// Keyed by req.user.id, tracked in-memory (fine for a single container —
+// resets on restart, which only ever loosens the limit).
+const SUBMIT_COOLDOWN_MS = 6000;
+const lastSubmitAt = new Map();
+
 app.use(express.json());
 
 // Verify platform-issued JWT if one was passed, then enforce auth on
