@@ -224,6 +224,66 @@ app.get('/api/wallet', async (req, res) => {
   }
 });
 
+// User profile — stats for the logged-in user.
+app.get('/api/profile', async (req, res) => {
+  try {
+    await pool.query(`
+      INSERT INTO wallets (user_id, username, coins)
+      VALUES ($1, $2, $3)
+      ON CONFLICT (user_id) DO NOTHING
+    `, [req.user.id, req.user.username, STARTING_COINS]);
+
+    const { rows: walletRows } = await pool.query(
+      `SELECT coins, created_at FROM wallets WHERE user_id = $1`,
+      [req.user.id]
+    );
+    const wallet = walletRows[0];
+
+    const { rows: rankRows } = await pool.query(`
+      SELECT u_presses, u_rank FROM (
+        SELECT user_id,
+          COUNT(*) AS u_presses,
+          RANK() OVER (ORDER BY COUNT(*) DESC) AS u_rank
+        FROM presses
+        GROUP BY user_id
+      ) sub
+      WHERE sub.user_id = $1
+    `, [req.user.id]);
+
+    const allTimePresses = rankRows.length > 0 ? parseInt(rankRows[0].u_presses, 10) : 0;
+    const rank = rankRows.length > 0 ? parseInt(rankRows[0].u_rank, 10) : null;
+
+    const { rows: sellRows } = await pool.query(`
+      SELECT SUM(amount) AS energy_sold, SUM(total_coins) AS coins_earned
+      FROM energy_trades WHERE seller_user_id = $1
+    `, [req.user.id]);
+
+    const { rows: buyRows } = await pool.query(`
+      SELECT SUM(amount) AS energy_bought, SUM(total_coins) AS coins_spent
+      FROM energy_trades WHERE buyer_user_id = $1
+    `, [req.user.id]);
+
+    const energySold   = sellRows[0].energy_sold   != null ? parseInt(sellRows[0].energy_sold,   10) : null;
+    const coinsEarned  = sellRows[0].coins_earned  != null ? parseInt(sellRows[0].coins_earned,  10) : null;
+    const energyBought = buyRows[0].energy_bought  != null ? parseInt(buyRows[0].energy_bought,  10) : null;
+    const coinsSpent   = buyRows[0].coins_spent    != null ? parseInt(buyRows[0].coins_spent,    10) : null;
+
+    res.json({
+      username:        req.user.username,
+      member_since:    wallet.created_at,
+      coins:           wallet.coins,
+      all_time_presses: allTimePresses,
+      rank,
+      energy_sold:     energySold,
+      coins_earned:    coinsEarned,
+      energy_bought:   energyBought,
+      coins_spent:     coinsSpent,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Leaderboard — all-time press totals. Also returns caller's rank if outside top 50.
 app.get('/api/leaderboard', async (req, res) => {
   try {
@@ -485,6 +545,28 @@ async function seedStaging() {
         FROM generate_series(1, $3)
       `, [f.id, f.username, toAdd]);
     }
+  }
+
+  // Seed trades so the profile marketplace-activity section is non-empty.
+  const { rows: t1 } = await pool.query(
+    `SELECT COUNT(*) AS c FROM energy_trades WHERE buyer_user_id = -101 AND seller_user_id = -102`
+  );
+  if (parseInt(t1[0].c, 10) === 0) {
+    await pool.query(`
+      INSERT INTO energy_trades
+        (listing_id, buyer_user_id, buyer_username, seller_user_id, seller_username, amount, unit_price, total_coins)
+      VALUES (NULL, -101, 'staging_alice', -102, 'staging_bob', 10, 3, 30)
+    `);
+  }
+  const { rows: t2 } = await pool.query(
+    `SELECT COUNT(*) AS c FROM energy_trades WHERE buyer_user_id = -102 AND seller_user_id = -103`
+  );
+  if (parseInt(t2[0].c, 10) === 0) {
+    await pool.query(`
+      INSERT INTO energy_trades
+        (listing_id, buyer_user_id, buyer_username, seller_user_id, seller_username, amount, unit_price, total_coins)
+      VALUES (NULL, -102, 'staging_bob', -103, 'staging_carol', 5, 5, 25)
+    `);
   }
 }
 

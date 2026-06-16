@@ -203,6 +203,9 @@
       <button id="tab-mp-btn" class="flex-1 py-2 rounded-lg text-sm font-medium transition-all text-zinc-500 dark:text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200">
         Marketplace
       </button>
+      <button id="tab-pr-btn" class="flex-1 py-2 rounded-lg text-sm font-medium transition-all text-zinc-500 dark:text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200">
+        Profile
+      </button>
     </div>
 
     <!-- Leaderboard panel -->
@@ -253,6 +256,50 @@
       </div>
     </div>
 
+    <!-- Profile panel (hidden by default) -->
+    <div id="panel-pr" class="w-full flex-col gap-4 hidden">
+
+      <!-- Avatar + identity -->
+      <div class="flex flex-col items-center gap-2 py-4">
+        <div id="pr-avatar" class="w-16 h-16 rounded-full bg-zinc-200 dark:bg-zinc-800 flex items-center justify-center text-2xl font-bold text-teal-600 dark:text-teal-400">
+          ?
+        </div>
+        <div class="text-center">
+          <div id="pr-username" class="text-lg font-bold text-zinc-900 dark:text-zinc-100">—</div>
+          <div id="pr-member-since" class="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5">Member since —</div>
+        </div>
+      </div>
+
+      <!-- Stats grid -->
+      <div class="grid grid-cols-3 gap-2.5 w-full">
+        <div class="rounded-xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 px-3 py-2.5 text-center shadow-sm">
+          <div class="text-xs text-zinc-400 dark:text-zinc-500 mb-0.5">All-time</div>
+          <div id="pr-presses" class="text-sm font-semibold text-zinc-600 dark:text-zinc-300 tabular-nums">🏆 —</div>
+        </div>
+        <div class="rounded-xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 px-3 py-2.5 text-center shadow-sm">
+          <div class="text-xs text-zinc-400 dark:text-zinc-500 mb-0.5">Rank</div>
+          <div id="pr-rank" class="text-sm font-semibold text-zinc-600 dark:text-zinc-300 tabular-nums">—</div>
+        </div>
+        <div class="rounded-xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 px-3 py-2.5 text-center shadow-sm">
+          <div class="text-xs text-zinc-400 dark:text-zinc-500 mb-0.5">Coins</div>
+          <div id="pr-coins" class="text-sm font-semibold text-yellow-500 dark:text-yellow-400 tabular-nums">🪙 —</div>
+        </div>
+      </div>
+
+      <!-- Marketplace activity -->
+      <div class="rounded-2xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 p-4 flex flex-col gap-1 shadow-sm">
+        <h3 class="text-sm font-semibold text-zinc-700 dark:text-zinc-200 mb-1">Marketplace Activity</h3>
+        <div class="flex items-center justify-between py-1.5 border-b border-zinc-100 dark:border-zinc-800">
+          <span class="text-xs text-zinc-500 dark:text-zinc-400">Sold</span>
+          <span id="pr-sold" class="text-xs font-medium text-zinc-700 dark:text-zinc-300">—</span>
+        </div>
+        <div class="flex items-center justify-between py-1.5">
+          <span class="text-xs text-zinc-500 dark:text-zinc-400">Bought</span>
+          <span id="pr-bought" class="text-xs font-medium text-zinc-700 dark:text-zinc-300">—</span>
+        </div>
+      </div>
+    </div>
+
   </main>
 
   <!-- Toast notification (bottom-right, slide-in) -->
@@ -273,6 +320,7 @@
     let buttonEnabled   = true;  // true = click fires a press; false = shake + toast
     let energyLoadPending = false;
     let countdownTimer  = null;
+    let profileLoaded   = false;
 
     // ─── Auth / token ─────────────────────────────────────────────────────────
     const params  = new URLSearchParams(window.location.search);
@@ -586,6 +634,39 @@
       } catch {}
     }
 
+    // ─── Profile ──────────────────────────────────────────────────────────────
+    async function loadProfile() {
+      try {
+        const res = await fetch('/api/profile', { headers });
+        if (!res.ok) return;
+        const data = await res.json();
+        profileLoaded = true;
+
+        document.getElementById('pr-avatar').textContent =
+          data.username ? data.username[0].toUpperCase() : '?';
+        document.getElementById('pr-username').textContent = data.username || '—';
+
+        const since = data.member_since ? new Date(data.member_since) : null;
+        document.getElementById('pr-member-since').textContent = since
+          ? 'Member since ' + since.toLocaleDateString(undefined, { month: 'long', year: 'numeric' })
+          : 'Member since —';
+
+        document.getElementById('pr-presses').textContent = `🏆 ${data.all_time_presses ?? 0}`;
+        document.getElementById('pr-rank').textContent    = data.rank != null ? `#${data.rank}` : '—';
+        document.getElementById('pr-coins').textContent   = `🪙 ${data.coins ?? 0}`;
+
+        const soldEl = document.getElementById('pr-sold');
+        soldEl.textContent = data.energy_sold != null
+          ? `⚡ ${data.energy_sold} · 🪙 ${data.coins_earned} earned`
+          : '—';
+
+        const boughtEl = document.getElementById('pr-bought');
+        boughtEl.textContent = data.energy_bought != null
+          ? `⚡ ${data.energy_bought} · 🪙 ${data.coins_spent} spent`
+          : '—';
+      } catch {}
+    }
+
     // ─── Marketplace ──────────────────────────────────────────────────────────
     async function loadListings() {
       try {
@@ -797,31 +878,44 @@
 
     // ─── Tabs ─────────────────────────────────────────────────────────────────
     function switchTab(tab) {
-      const lbBtn = document.getElementById('tab-lb-btn');
-      const mpBtn = document.getElementById('tab-mp-btn');
+      const lbBtn  = document.getElementById('tab-lb-btn');
+      const mpBtn  = document.getElementById('tab-mp-btn');
+      const prBtn  = document.getElementById('tab-pr-btn');
       const lbPanel = document.getElementById('panel-lb');
       const mpPanel = document.getElementById('panel-mp');
+      const prPanel = document.getElementById('panel-pr');
 
       const activeClass   = 'flex-1 py-2 rounded-lg text-sm font-semibold transition-all bg-teal-600 text-white shadow-sm';
       const inactiveClass = 'flex-1 py-2 rounded-lg text-sm font-medium transition-all text-zinc-500 dark:text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200';
 
+      lbBtn.className = inactiveClass;
+      mpBtn.className = inactiveClass;
+      prBtn.className = inactiveClass;
+
+      lbPanel.classList.add('hidden');
+      mpPanel.classList.remove('flex');
+      mpPanel.classList.add('hidden');
+      prPanel.classList.remove('flex');
+      prPanel.classList.add('hidden');
+
       if (tab === 'lb') {
         lbBtn.className = activeClass;
-        mpBtn.className = inactiveClass;
         lbPanel.classList.remove('hidden');
-        mpPanel.classList.remove('flex');
-        mpPanel.classList.add('hidden');
-      } else {
+      } else if (tab === 'mp') {
         mpBtn.className = activeClass;
-        lbBtn.className = inactiveClass;
         mpPanel.classList.remove('hidden');
         mpPanel.classList.add('flex');
-        lbPanel.classList.add('hidden');
+      } else if (tab === 'pr') {
+        prBtn.className = activeClass;
+        prPanel.classList.remove('hidden');
+        prPanel.classList.add('flex');
+        if (!profileLoaded) loadProfile();
       }
     }
 
     document.getElementById('tab-lb-btn').addEventListener('click', () => switchTab('lb'));
     document.getElementById('tab-mp-btn').addEventListener('click', () => switchTab('mp'));
+    document.getElementById('tab-pr-btn').addEventListener('click', () => switchTab('pr'));
 
     // ─── Dark mode toggle ─────────────────────────────────────────────────────
     function applyTheme(isDark) {
