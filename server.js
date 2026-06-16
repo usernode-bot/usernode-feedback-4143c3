@@ -7,13 +7,14 @@ const app = express();
 const port = process.env.PORT || 3000;
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const JWT_SECRET = process.env.JWT_SECRET;
+const IS_STAGING = process.env.USERNODE_ENV === 'staging';
 
 const DAILY_ENERGY_LIMIT = 100;
 
 // Paths that stay open without authentication. Add a path here (and add it
 // with `app.get`/`app.post` below) if you deliberately want it public.
 // Everything else requires a valid platform-issued JWT.
-const PUBLIC_API_PATHS = new Set(['/health']);
+const PUBLIC_API_PATHS = new Set(['/health', '/api/users/search']);
 
 app.use(express.json());
 
@@ -103,6 +104,33 @@ app.get('/api/leaderboard', async (_req, res) => {
   }
 });
 
+// User search — public endpoint, searches by username substring
+app.get('/api/users/search', async (req, res) => {
+  const q = (req.query.q || '').trim();
+  if (q.length < 2) {
+    return res.status(400).json({ error: 'query_too_short' });
+  }
+  try {
+    const { rows } = await pool.query(`
+      WITH ranked AS (
+        SELECT username,
+               COUNT(*)::int AS total_presses,
+               RANK() OVER (ORDER BY COUNT(*) DESC)::int AS rank
+        FROM presses
+        GROUP BY username
+      )
+      SELECT username, total_presses, rank
+      FROM ranked
+      WHERE username ILIKE $1
+      ORDER BY total_presses DESC
+      LIMIT 10
+    `, [`%${q}%`]);
+    res.json({ users: rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
 
 // HTML shell: serve the app if authenticated, otherwise an "open in Usernode"
@@ -130,6 +158,32 @@ async function start() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     )
   `);
+
+  if (IS_STAGING) {
+    const { rows: existing } = await pool.query(
+      `SELECT 1 FROM presses WHERE username = 'staging-demo-alice' LIMIT 1`
+    );
+    if (!existing.length) {
+      const demoUsers = [
+        { uid: -1, name: 'staging-demo-alice', count: 240 },
+        { uid: -2, name: 'staging-demo-bob',   count: 185 },
+        { uid: -3, name: 'staging-demo-carol', count: 130 },
+        { uid: -4, name: 'staging-demo-dave',  count: 95 },
+        { uid: -5, name: 'staging-demo-eve',   count: 60 },
+        { uid: -6, name: 'staging-demo-frank', count: 40 },
+        { uid: -7, name: 'staging-demo-grace', count: 20 },
+        { uid: -8, name: 'staging-demo-heidi', count: 8 },
+      ];
+      for (const u of demoUsers) {
+        await pool.query(`
+          INSERT INTO presses (user_id, username, created_at)
+          SELECT $1, $2, NOW() - (generate_series(1, $3) * INTERVAL '1 hour')
+        `, [u.uid, u.name, u.count]);
+      }
+      console.log('Staging: seeded demo press data for 8 fake users');
+    }
+  }
+
   app.listen(port, () => console.log(`Listening on :${port}`));
 }
 
