@@ -124,6 +124,11 @@
     <div id="energy-text" class="text-sm text-zinc-500 dark:text-zinc-400">100 / 100 energy</div>
     <div id="energy-countdown" class="text-xs text-zinc-400 dark:text-zinc-500">Energy full</div>
     <div id="energy-speed" class="text-xs text-zinc-400 dark:text-zinc-500">+1 energy every 30s</div>
+    <!-- purchased energy + coin balance -->
+    <div class="flex items-center gap-3 text-xs text-zinc-500 dark:text-zinc-400">
+      <span id="purchased-text">⚡ +0 stored</span>
+      <span id="coins-text">🪙 0 coins</span>
+    </div>
   </div>
 
   <div id="count" class="text-lg text-zinc-500 dark:text-zinc-400">0 total presses</div>
@@ -133,6 +138,27 @@
   <div class="w-full max-w-sm">
     <h2 class="text-sm font-semibold text-teal-600 dark:text-teal-400 mb-2 text-center">Leaderboard</h2>
     <div id="leaderboard" class="space-y-1"></div>
+  </div>
+
+  <!-- Energy Marketplace -->
+  <div class="w-full max-w-sm flex flex-col gap-3">
+    <h2 class="text-sm font-medium text-zinc-500 text-center">⚡ Energy Marketplace</h2>
+
+    <!-- Sell form -->
+    <div class="rounded-lg border border-zinc-200 dark:border-zinc-800 p-3 flex flex-col gap-2">
+      <p class="text-xs text-zinc-500 dark:text-zinc-400">Sell your daily energy for coins.</p>
+      <div class="flex items-center gap-2">
+        <input id="sell-amount" type="number" min="1" placeholder="energy"
+          class="w-0 flex-1 min-w-0 rounded-md border border-zinc-300 dark:border-zinc-700 bg-transparent px-2 py-1.5 text-sm" />
+        <input id="sell-price" type="number" min="1" placeholder="coins each"
+          class="w-0 flex-1 min-w-0 rounded-md border border-zinc-300 dark:border-zinc-700 bg-transparent px-2 py-1.5 text-sm" />
+        <button id="sell-btn"
+          class="shrink-0 rounded-md bg-violet-600 hover:bg-violet-500 text-white text-sm font-medium px-3 py-1.5 transition-colors">Sell</button>
+      </div>
+    </div>
+
+    <!-- Listings -->
+    <div id="listings" class="space-y-1.5"></div>
   </div>
 
   <!-- Toast notification (bottom-right, slides up on show) -->
@@ -283,6 +309,16 @@
       }
     }
 
+    let purchasedEnergy = 0;
+
+    function updateWalletDisplay(coins, purchased) {
+      if (typeof purchased === 'number') purchasedEnergy = purchased;
+      document.getElementById('purchased-text').textContent = '⚡ +' + purchasedEnergy + ' stored';
+      if (typeof coins === 'number') {
+        document.getElementById('coins-text').textContent = '🪙 ' + coins + ' coins';
+      }
+    }
+
     function showToast(message) {
       const toast = document.getElementById('toast');
       document.getElementById('toast-msg').textContent = message;
@@ -370,6 +406,115 @@
       showToast('⚡ You\'re out of energy!' + eta);
     }
 
+    async function loadWallet() {
+      const res = await fetch('/api/wallet', { headers });
+      if (!res.ok) return;
+      const data = await res.json();
+      updateWalletDisplay(data.coins, data.purchased_energy);
+    }
+
+    async function loadListings() {
+      const res = await fetch('/api/listings', { headers });
+      if (!res.ok) return;
+      const { listings } = await res.json();
+      const el = document.getElementById('listings');
+      if (!listings.length) {
+        el.innerHTML = '<p class="text-center text-zinc-400 dark:text-zinc-600 text-xs py-2">No energy for sale right now</p>';
+        return;
+      }
+      el.innerHTML = listings.map((l) => {
+        const action = l.is_mine
+          ? '<button data-cancel="' + l.id + '" class="shrink-0 rounded-md border border-zinc-300 dark:border-zinc-700 text-zinc-500 hover:text-red-500 text-xs font-medium px-2.5 py-1 transition-colors">Cancel</button>'
+          : '<button data-buy="' + l.id + '" data-max="' + l.remaining_amount + '" class="shrink-0 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium px-2.5 py-1 transition-colors">Buy</button>';
+        return '<div class="flex items-center justify-between gap-2 rounded-md border border-zinc-200 dark:border-zinc-800 px-3 py-1.5 text-sm">' +
+          '<span class="truncate"><span class="font-medium">' + l.seller_username + '</span>' +
+          (l.is_mine ? ' <span class="text-xs text-violet-500">(you)</span>' : '') + '</span>' +
+          '<span class="font-mono text-xs text-zinc-500 dark:text-zinc-400 shrink-0">⚡' + l.remaining_amount + ' · 🪙' + l.unit_price + '/ea</span>' +
+          action + '</div>';
+      }).join('');
+    }
+
+    async function refreshMarket() {
+      await Promise.all([loadWallet(), loadListings(), loadEnergy()]);
+    }
+
+    // Sell
+    document.getElementById('sell-btn').addEventListener('click', async () => {
+      const amount = parseInt(document.getElementById('sell-amount').value, 10);
+      const unitPrice = parseInt(document.getElementById('sell-price').value, 10);
+      if (!(amount >= 1) || !(unitPrice >= 1)) {
+        showToast('Enter an energy amount and a coin price (both ≥ 1).');
+        return;
+      }
+      try {
+        const res = await fetch('/api/listings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...headers },
+          body: JSON.stringify({ amount, unit_price: unitPrice }),
+        });
+        const data = await res.json();
+        if (res.ok) {
+          document.getElementById('sell-amount').value = '';
+          document.getElementById('sell-price').value = '';
+          showToast('✅ Listed ' + amount + ' energy at ' + unitPrice + ' coins each!');
+          refreshMarket();
+        } else if (data.error === 'insufficient_energy') {
+          showToast('Not enough daily energy — you have ' + data.remaining_daily + ' left.');
+        } else {
+          showToast('Could not list energy.');
+        }
+      } catch {}
+    });
+
+    // Buy / Cancel (event-delegated on the listings container)
+    document.getElementById('listings').addEventListener('click', async (e) => {
+      const buyBtn = e.target.closest('[data-buy]');
+      const cancelBtn = e.target.closest('[data-cancel]');
+      if (buyBtn) {
+        const id = buyBtn.getAttribute('data-buy');
+        const max = parseInt(buyBtn.getAttribute('data-max'), 10);
+        const input = prompt('How much energy to buy? (1–' + max + ')', String(max));
+        if (input === null) return;
+        const amount = parseInt(input, 10);
+        if (!(amount >= 1)) { showToast('Enter a valid amount.'); return; }
+        try {
+          const res = await fetch('/api/listings/' + id + '/buy', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...headers },
+            body: JSON.stringify({ amount }),
+          });
+          const data = await res.json();
+          if (res.ok) {
+            showToast('🛒 Bought ' + data.amount + ' energy!');
+            updateWalletDisplay(data.coins, data.purchased_energy);
+            refreshMarket();
+          } else if (data.error === 'insufficient_coins') {
+            showToast('Not enough coins — you have ' + data.coins + '.');
+          } else if (data.error === 'cannot_buy_own') {
+            showToast("You can't buy your own listing.");
+          } else if (data.error === 'amount_unavailable') {
+            showToast('Only ' + data.remaining_amount + ' energy left in that listing.');
+            refreshMarket();
+          } else {
+            showToast('That listing is no longer available.');
+            refreshMarket();
+          }
+        } catch {}
+      } else if (cancelBtn) {
+        const id = cancelBtn.getAttribute('data-cancel');
+        try {
+          const res = await fetch('/api/listings/' + id, { method: 'DELETE', headers });
+          if (res.ok) {
+            showToast('Listing cancelled — energy returned.');
+            refreshMarket();
+          } else {
+            showToast('Could not cancel.');
+            refreshMarket();
+          }
+        } catch {}
+      }
+    });
+
     document.getElementById('press-btn').addEventListener('click', async (event) => {
       playClickSound();
       spawnStar(event.clientX, event.clientY);
@@ -434,7 +579,7 @@
 
     renderSpeedLabel();
     startCountdownLoop();
-    Promise.all([loadLeaderboard(), loadEnergy()]);
+    Promise.all([loadLeaderboard(), loadEnergy(), loadWallet(), loadListings()]);
   </script>
 </body>
 </html>
