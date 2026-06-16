@@ -12,38 +12,19 @@ const IS_STAGING = process.env.USERNODE_ENV === 'staging';
 const DAILY_ENERGY_LIMIT = 100;
 const STARTING_COINS = 100;
 
-// Energy regenerates continuously: one charge every REGEN_INTERVAL_SECONDS,
-// up to ENERGY_CAP. There is no longer a daily reset — energy trickles back.
-const ENERGY_CAP = 100;
-const REGEN_INTERVAL_SECONDS = 30;
-const REGEN_INTERVAL_MS = REGEN_INTERVAL_SECONDS * 1000;
-
-// Paths that stay open without authentication. Add a path here (and add it
-// with `app.get`/`app.post` below) if you deliberately want it public.
-// Everything else requires a valid platform-issued JWT.
 const PUBLIC_API_PATHS = new Set(['/health']);
 
-// Per-user submission rate limit: at most one submission every 6 seconds.
-// Keyed by req.user.id, tracked in-memory (fine for a single container —
-// resets on restart, which only ever loosens the limit).
+// Per-user submission rate limit: one press per 6 seconds max.
 const SUBMIT_COOLDOWN_MS = 6000;
 const lastSubmitAt = new Map();
 
 app.use(express.json());
 
-// Verify platform-issued JWT if one was passed, then enforce auth on
-// anything not explicitly marked public. The iframe adds `?token=…`
-// on load; the frontend script forwards the token via `x-usernode-token`
-// on subsequent fetches.
 app.use((req, res, next) => {
   const token = req.query.token || req.headers['x-usernode-token'];
   if (token && JWT_SECRET) {
     try { req.user = jwt.verify(token, JWT_SECRET); } catch {}
   }
-
-  // Static assets (CSS/JS/images) are always served; the API and the HTML
-  // shell are gated so direct hits to the staging/prod subdomain don't
-  // leak app data to the public internet.
   if (req.method !== 'GET' || req.path.startsWith('/api/')) {
     if (PUBLIC_API_PATHS.has(req.path)) return next();
     if (!req.user) return res.status(401).json({ error: 'Not authenticated' });
@@ -53,24 +34,8 @@ app.use((req, res, next) => {
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
-// --- Energy accrual ---------------------------------------------------------
-
-// Given a stored balance + its clock anchor, roll forward to `now`: add one
-// charge per whole elapsed interval, clamped at the cap. We advance the anchor
-// by *whole intervals only* (not to `now`) so sub-interval progress survives
-// across reads; once full, the anchor is pinned to `now`.
-function accrue(energy, updatedAt, now) {
-  if (energy >= ENERGY_CAP) return { energy: ENERGY_CAP, updatedAt: now };
-  const anchor = new Date(updatedAt).getTime();
-  const gained = Math.max(0, Math.floor((now.getTime() - anchor) / REGEN_INTERVAL_MS));
-  const newEnergy = Math.min(ENERGY_CAP, energy + gained);
-  if (newEnergy >= ENERGY_CAP) return { energy: ENERGY_CAP, updatedAt: now };
-  return { energy: newEnergy, updatedAt: new Date(anchor + gained * REGEN_INTERVAL_MS) };
-}
-
 // Number of daily-energy presses this user has made since UTC midnight.
-// Only `source='daily'` presses count against the daily cap — presses
-// powered by purchased energy do not.
+// Only source='daily' presses count against the daily cap.
 async function getDailyPressCount(userId, client = pool) {
   const { rows } = await client.query(`
     SELECT COUNT(*) AS count
@@ -82,9 +47,7 @@ async function getDailyPressCount(userId, client = pool) {
   return parseInt(rows[0].count, 10);
 }
 
-// Energy locked in this user's still-active listings created today. Selling
-// energy escrows it out of today's pool immediately; cancelling a listing
-// returns its unsold remainder.
+// Energy locked in still-active listings created today.
 async function getEscrowedToday(userId, client = pool) {
   const { rows } = await client.query(`
     SELECT COALESCE(SUM(remaining_amount), 0) AS escrowed
@@ -103,8 +66,7 @@ async function getRemainingDaily(userId, client = pool) {
   return DAILY_ENERGY_LIMIT - pressed - escrowed;
 }
 
-// Fetch (lazily creating) the user's wallet. Seeds new wallets with the
-// starting coin balance so buyers can transact on day one.
+// Fetch (lazily creating) the user's wallet.
 async function getWallet(user, client = pool) {
   await client.query(`
     INSERT INTO wallets (user_id, username, coins)
@@ -118,8 +80,6 @@ async function getWallet(user, client = pool) {
   return rows[0];
 }
 
-// Flip any listings whose expiry has passed to 'expired' so they stop
-// trading and stop escrowing energy. Cheap to call before reads/writes.
 async function expireStaleListings(client = pool) {
   await client.query(`
     UPDATE energy_listings
@@ -134,111 +94,118 @@ function nextUtcMidnight() {
   return d.toISOString();
 }
 
-// The single response shape every energy-bearing branch returns. Keeping all
-// branches on this helper is what prevents the NaN:NaN class of bug — the
-// timing field is never accidentally omitted.
-function payloadFor(energy, updatedAt) {
-  const full = energy >= ENERGY_CAP;
-  return {
-    energy,
-    cap: ENERGY_CAP,
-    full,
-    next_charge_at: full
-      ? null
-      : new Date(new Date(updatedAt).getTime() + REGEN_INTERVAL_MS).toISOString(),
-    regen_interval_seconds: REGEN_INTERVAL_SECONDS,
-  };
-}
-
-// Staging-only synthetic state so reviewers can watch the countdown tick and
-// the energy number climb without having to drain a real balance first.
-// No-op in production (guarded by IS_STAGING at the call site).
-function demoPayload() {
-  return {
-    energy: 3,
-    cap: ENERGY_CAP,
-    full: false,
-    next_charge_at: new Date(Date.now() + 12000).toISOString(),
-    regen_interval_seconds: REGEN_INTERVAL_SECONDS,
-  };
-}
-
-// Read + accrue + persist the caller's balance. A missing row means the user
-// has never spent energy, so they're full; we don't materialize a row until
-// the first press (see /api/press).
-async function readAndPersistEnergy(userId) {
-  const { rows } = await pool.query(
-    'SELECT energy, updated_at FROM energy_state WHERE user_id = $1',
-    [userId],
-  );
-  if (!rows.length) return { energy: ENERGY_CAP, updatedAt: new Date() };
-  const a = accrue(rows[0].energy, rows[0].updated_at, new Date());
-  await pool.query(
-    'UPDATE energy_state SET energy = $1, updated_at = $2 WHERE user_id = $3',
-    [a.energy, a.updatedAt, userId],
-  );
-  return a;
-}
-
-// Energy status
+// Energy status — daily model: remaining = limit - today's press count.
 app.get('/api/energy', async (req, res) => {
   try {
-    if (IS_STAGING && req.query.demo === '1') return res.json(demoPayload());
-    const a = await readAndPersistEnergy(req.user.id);
-    res.json(payloadFor(a.energy, a.updatedAt));
+    if (IS_STAGING && req.query.demo === '1') {
+      return res.json({
+        energy: 7,
+        cap: DAILY_ENERGY_LIMIT,
+        full: false,
+        resets_at: nextUtcMidnight(),
+        purchased_energy: 3,
+      });
+    }
+    const pressed = await getDailyPressCount(req.user.id);
+    const energy = Math.max(0, DAILY_ENERGY_LIMIT - pressed);
+    const wallet = await getWallet(req.user);
+    res.json({
+      energy,
+      cap: DAILY_ENERGY_LIMIT,
+      full: energy >= DAILY_ENERGY_LIMIT,
+      resets_at: nextUtcMidnight(),
+      purchased_energy: wallet.purchased_energy,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Button press — spend one energy. Wrapped in a transaction with a row lock so
-// two near-simultaneous clicks can't both spend the same charge.
+// Button press. Uses daily energy first; falls back to purchased_energy.
 app.post('/api/press', async (req, res) => {
   if (IS_STAGING && req.query.demo === '1') {
-    // Demo mode never mutates real state; just hand back a fresh demo frame.
-    return res.json({ ok: true, ...demoPayload() });
+    return res.json({
+      ok: true,
+      energy: 6,
+      cap: DAILY_ENERGY_LIMIT,
+      full: false,
+      resets_at: nextUtcMidnight(),
+      purchased_energy: 3,
+    });
   }
+
+  const now = Date.now();
+  const last = lastSubmitAt.get(req.user.id);
+  if (last && now - last < SUBMIT_COOLDOWN_MS) {
+    return res.status(429).json({ error: 'rate_limited' });
+  }
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    // Guarantee a row exists (full), then lock it for the spend.
-    await client.query(
-      `INSERT INTO energy_state (user_id, energy, updated_at)
-       VALUES ($1, $2, NOW())
-       ON CONFLICT (user_id) DO NOTHING`,
-      [req.user.id, ENERGY_CAP],
-    );
-    const { rows } = await client.query(
-      'SELECT energy, updated_at FROM energy_state WHERE user_id = $1 FOR UPDATE',
-      [req.user.id],
-    );
-    const now = new Date();
-    const a = accrue(rows[0].energy, rows[0].updated_at, now);
 
-    if (a.energy <= 0) {
+    const pressed = await getDailyPressCount(req.user.id, client);
+    const dailyEnergy = DAILY_ENERGY_LIMIT - pressed;
+
+    if (dailyEnergy > 0) {
       await client.query(
-        'UPDATE energy_state SET energy = $1, updated_at = $2 WHERE user_id = $3',
-        [a.energy, a.updatedAt, req.user.id],
+        `INSERT INTO presses (user_id, username, source) VALUES ($1, $2, 'daily')`,
+        [req.user.id, req.user.username]
       );
+      lastSubmitAt.set(req.user.id, now);
+      const wallet = await getWallet(req.user, client);
       await client.query('COMMIT');
-      return res.status(429).json({ error: 'no_energy', ...payloadFor(a.energy, a.updatedAt) });
+      return res.json({
+        ok: true,
+        energy: dailyEnergy - 1,
+        cap: DAILY_ENERGY_LIMIT,
+        full: false,
+        resets_at: nextUtcMidnight(),
+        purchased_energy: wallet.purchased_energy,
+      });
     }
 
-    // If they were at the cap, regen starts ticking from this spend.
-    const wasFull = a.energy >= ENERGY_CAP;
-    const newEnergy = a.energy - 1;
-    const newUpdatedAt = wasFull ? now : a.updatedAt;
+    // Daily energy exhausted — try purchased_energy from wallet.
+    await client.query(`
+      INSERT INTO wallets (user_id, username, coins) VALUES ($1, $2, $3)
+      ON CONFLICT (user_id) DO NOTHING
+    `, [req.user.id, req.user.username, STARTING_COINS]);
+    const { rows } = await client.query(
+      `SELECT coins, purchased_energy FROM wallets WHERE user_id = $1 FOR UPDATE`,
+      [req.user.id]
+    );
+    const wallet = rows[0];
 
-    await client.query(
-      'UPDATE energy_state SET energy = $1, updated_at = $2 WHERE user_id = $3',
-      [newEnergy, newUpdatedAt, req.user.id],
-    );
-    await client.query(
-      'INSERT INTO presses (user_id, username) VALUES ($1, $2)',
-      [req.user.id, req.user.username],
-    );
-    await client.query('COMMIT');
-    res.json({ ok: true, ...payloadFor(newEnergy, newUpdatedAt) });
+    if (wallet.purchased_energy >= 1) {
+      await client.query(
+        `UPDATE wallets SET purchased_energy = purchased_energy - 1 WHERE user_id = $1`,
+        [req.user.id]
+      );
+      await client.query(
+        `INSERT INTO presses (user_id, username, source) VALUES ($1, $2, 'purchased')`,
+        [req.user.id, req.user.username]
+      );
+      lastSubmitAt.set(req.user.id, now);
+      await client.query('COMMIT');
+      return res.json({
+        ok: true,
+        energy: 0,
+        cap: DAILY_ENERGY_LIMIT,
+        full: false,
+        resets_at: nextUtcMidnight(),
+        purchased_energy: wallet.purchased_energy - 1,
+      });
+    }
+
+    await client.query('ROLLBACK');
+    return res.status(429).json({
+      error: 'no_energy',
+      energy: 0,
+      cap: DAILY_ENERGY_LIMIT,
+      full: false,
+      resets_at: nextUtcMidnight(),
+      purchased_energy: 0,
+    });
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch {}
     res.status(500).json({ error: err.message });
@@ -252,6 +219,46 @@ app.get('/api/wallet', async (req, res) => {
   try {
     const wallet = await getWallet(req.user);
     res.json({ coins: wallet.coins, purchased_energy: wallet.purchased_energy });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Leaderboard — all-time press totals. Also returns caller's rank if outside top 50.
+app.get('/api/leaderboard', async (req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT username, COUNT(*) AS presses
+      FROM presses
+      GROUP BY username
+      ORDER BY presses DESC
+      LIMIT 50
+    `);
+
+    const username = req.user.username;
+    const inList = rows.some(r => r.username === username);
+
+    let myRank = null;
+    if (!inList) {
+      const { rows: rankRows } = await pool.query(`
+        SELECT u_rank, u_presses FROM (
+          SELECT username,
+            COUNT(*) AS u_presses,
+            RANK() OVER (ORDER BY COUNT(*) DESC) AS u_rank
+          FROM presses
+          GROUP BY username
+        ) sub
+        WHERE sub.username = $1
+      `, [username]);
+      if (rankRows.length > 0) {
+        myRank = {
+          rank: parseInt(rankRows[0].u_rank, 10),
+          presses: parseInt(rankRows[0].u_presses, 10),
+        };
+      }
+    }
+
+    res.json({ leaderboard: rows, my_rank: myRank, my_username: username });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -332,7 +339,6 @@ app.post('/api/listings/:id/buy', async (req, res) => {
       return res.status(400).json({ error: 'cannot_buy_own' });
     }
 
-    // Default to buying the whole listing when no amount is supplied.
     const amount = wantRaw == null ? listing.remaining_amount : Number(wantRaw);
     if (!Number.isInteger(amount) || amount < 1 || amount > listing.remaining_amount) {
       await client.query('ROLLBACK');
@@ -341,7 +347,6 @@ app.post('/api/listings/:id/buy', async (req, res) => {
 
     const cost = amount * listing.unit_price;
 
-    // Lock + ensure buyer wallet.
     await client.query(`
       INSERT INTO wallets (user_id, username, coins) VALUES ($1, $2, $3)
       ON CONFLICT (user_id) DO NOTHING
@@ -356,7 +361,6 @@ app.post('/api/listings/:id/buy', async (req, res) => {
       return res.status(402).json({ error: 'insufficient_coins', coins: buyer.coins });
     }
 
-    // Ensure seller wallet exists, then credit it.
     await client.query(`
       INSERT INTO wallets (user_id, username, coins) VALUES ($1, $2, $3)
       ON CONFLICT (user_id) DO NOTHING
@@ -421,26 +425,8 @@ app.delete('/api/listings/:id', async (req, res) => {
   }
 });
 
-// Leaderboard — counts all presses (daily + purchased).
-app.get('/api/leaderboard', async (_req, res) => {
-  try {
-    const { rows } = await pool.query(`
-      SELECT username, COUNT(*) as presses
-      FROM presses
-      GROUP BY username
-      ORDER BY presses DESC
-      LIMIT 50
-    `);
-    res.json({ leaderboard: rows });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
 app.use(express.static(path.join(__dirname, 'public')));
 
-// HTML shell: serve the app if authenticated, otherwise an "open in Usernode"
-// landing page so stray visits to the staging URL don't reveal the app.
 app.get('*', (req, res) => {
   if (!req.user) {
     return res.status(401).send(`<!doctype html><meta charset=utf-8><title>Open in Usernode</title>
@@ -456,29 +442,48 @@ app.get('*', (req, res) => {
 });
 
 async function seedStaging() {
-  // Give the marketplace some life on a fresh staging container. Public
-  // tables copy prod rows into staging, but these fake sellers may not be
-  // present, so (re)seed idempotently behind sentinel user ids.
   const fakes = [
-    { id: -101, username: 'staging_alice', coins: 500, price: 2, amount: 30 },
-    { id: -102, username: 'staging_bob', coins: 250, price: 3, amount: 15 },
-    { id: -103, username: 'staging_carol', coins: 999, price: 5, amount: 50 },
+    { id: -101, username: 'staging_alice', coins: 500, price: 2, amount: 30, presses: 85 },
+    { id: -102, username: 'staging_bob',   coins: 250, price: 3, amount: 15, presses: 42 },
+    { id: -103, username: 'staging_carol', coins: 999, price: 5, amount: 50, presses: 10 },
+    { id: -104, username: 'staging_dave',  coins: 150, price: null, amount: null, presses: 7 },
+    { id: -105, username: 'staging_eve',   coins: 75,  price: null, amount: null, presses: 3 },
   ];
+
   for (const f of fakes) {
     await pool.query(`
       INSERT INTO wallets (user_id, username, coins) VALUES ($1, $2, $3)
       ON CONFLICT (user_id) DO NOTHING
     `, [f.id, f.username, f.coins]);
-    const { rows } = await pool.query(`
-      SELECT COUNT(*) AS c FROM energy_listings
-      WHERE seller_user_id = $1 AND status = 'active'
+
+    if (f.price && f.amount) {
+      const { rows } = await pool.query(`
+        SELECT COUNT(*) AS c FROM energy_listings
+        WHERE seller_user_id = $1 AND status = 'active'
+      `, [f.id]);
+      if (parseInt(rows[0].c, 10) === 0) {
+        await pool.query(`
+          INSERT INTO energy_listings
+            (seller_user_id, seller_username, unit_price, total_amount, remaining_amount, expires_at)
+          VALUES ($1, $2, $3, $4, $4, $5)
+        `, [f.id, f.username, f.price, f.amount, nextUtcMidnight()]);
+      }
+    }
+
+    // Seed today's presses so these users appear on the leaderboard.
+    const { rows: pressRows } = await pool.query(`
+      SELECT COUNT(*) AS c FROM presses
+      WHERE user_id = $1
+        AND created_at >= DATE_TRUNC('day', NOW() AT TIME ZONE 'UTC')
     `, [f.id]);
-    if (parseInt(rows[0].c, 10) === 0) {
+    const existing = parseInt(pressRows[0].c, 10);
+    if (existing < f.presses) {
+      const toAdd = f.presses - existing;
       await pool.query(`
-        INSERT INTO energy_listings
-          (seller_user_id, seller_username, unit_price, total_amount, remaining_amount, expires_at)
-        VALUES ($1, $2, $3, $4, $4, $5)
-      `, [f.id, f.username, f.price, f.amount, nextUtcMidnight()]);
+        INSERT INTO presses (user_id, username, source, created_at)
+        SELECT $1, $2, 'daily', NOW()
+        FROM generate_series(1, $3)
+      `, [f.id, f.username, toAdd]);
     }
   }
 }
@@ -492,14 +497,10 @@ async function start() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     )
   `);
-  // Track which energy pool powered each press. 'daily' counts against the
-  // daily cap; 'purchased' is spent from bought energy and does not.
   await pool.query(`
     ALTER TABLE presses ADD COLUMN IF NOT EXISTS source VARCHAR(16) NOT NULL DEFAULT 'daily'
   `);
 
-  // In-app currency + bought energy balance. Public: holds play-money only,
-  // and the leaderboard already exposes per-user activity.
   await pool.query(`
     CREATE TABLE IF NOT EXISTS wallets (
       user_id INTEGER PRIMARY KEY,
@@ -539,9 +540,7 @@ async function start() {
     )
   `);
 
-  // Per-user energy balance + regen clock anchor. Public: holds only a small
-  // integer counter and a timestamp — nothing a stranger viewing staging
-  // shouldn't see, and no FK to any private table.
+  // Kept for backward compatibility; no longer read or written by active code.
   await pool.query(`
     CREATE TABLE IF NOT EXISTS energy_state (
       user_id INTEGER PRIMARY KEY,
