@@ -517,6 +517,7 @@
 
     document.getElementById('press-btn').addEventListener('click', async (event) => {
       playClickSound();
+      if (navigator.vibrate) navigator.vibrate(50);
       spawnStar(event.clientX, event.clientY);
       try {
         const res = await fetch(apiUrl('/api/press'), {
