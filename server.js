@@ -21,13 +21,15 @@ const REGEN_INTERVAL_MS = REGEN_INTERVAL_SECONDS * 1000;
 // Paths that stay open without authentication. Add a path here (and add it
 // with `app.get`/`app.post` below) if you deliberately want it public.
 // Everything else requires a valid platform-issued JWT.
-const PUBLIC_API_PATHS = new Set(['/health', '/api/users/search']);
+const PUBLIC_API_PATHS = new Set(['/health', '/api/users/search', '/favicon.ico']);
 
 // Per-user submission rate limit: one press per 6 seconds max.
 const SUBMIT_COOLDOWN_MS = 6000;
 const lastSubmitAt = new Map();
 
 app.use(express.json());
+
+app.get('/favicon.ico', (req, res) => res.status(204).end());
 
 app.use((req, res, next) => {
   const token = req.query.token || req.headers['x-usernode-token'];
