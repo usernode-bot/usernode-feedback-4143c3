@@ -1,4 +1,5 @@
 {
+  "icon": { "image": "brand/icon.png" },
   "secrets": [],
   "name": "Something Fun"
 }
